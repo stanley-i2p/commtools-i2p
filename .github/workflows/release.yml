@@ -1,0 +1,367 @@
+name: Release builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build artifacts only or create a draft GitHub release
+        required: true
+        default: build-only
+        type: choice
+        options:
+          - build-only
+          - draft-release
+      release_tag:
+        description: Optional for build-only; required for draft-release (for example, v0.1.0)
+        required: false
+        type: string
+      prerelease:
+        description: Mark a created draft release as a prerelease
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-builds-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-linux:
+    name: Build Linux x86_64 (musl)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      version: ${{ steps.metadata.outputs.version }}
+
+    steps:
+      - name: Check out selected revision
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read and validate release metadata
+        id: metadata
+        shell: bash
+        env:
+          REQUESTED_MODE: ${{ inputs.mode }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          version="$(
+            cargo metadata \
+              --manifest-path Cargo.toml \
+              --no-deps \
+              --locked \
+              --format-version 1 \
+              | jq -r '.packages[] | select(.name == "termcomm-i2p") | .version'
+          )"
+
+          if [[ -z "$version" || "$version" == "null" ]]; then
+            echo "Unable to read termcomm-i2p version from workspace metadata." >&2
+            exit 1
+          fi
+
+          expected_tag="v${version}"
+          release_tag="${REQUESTED_TAG:-$expected_tag}"
+          if [[ "$release_tag" != "$expected_tag" ]]; then
+            echo "Release tag '$release_tag' does not match workspace version '$expected_tag'." >&2
+            exit 1
+          fi
+
+          if [[ "$REQUESTED_MODE" == "draft-release" ]]; then
+            if [[ -z "${REQUESTED_TAG:-}" ]]; then
+              echo "release_tag is required when creating a draft release." >&2
+              exit 1
+            fi
+            if ! git show-ref --verify --quiet "refs/tags/$release_tag"; then
+              echo "Tag '$release_tag' does not exist." >&2
+              exit 1
+            fi
+            if [[ "$(git rev-list -n 1 "$release_tag")" != "$(git rev-parse HEAD)" ]]; then
+              echo "Tag '$release_tag' does not point to the selected workflow revision." >&2
+              exit 1
+            fi
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=termcomm-i2p-$release_tag-linux-x86_64-musl" >> "$GITHUB_OUTPUT"
+
+      - name: Install musl build target
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends file musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Test workspace
+        run: cargo test --workspace --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked --package termcomm-i2p --target x86_64-unknown-linux-musl
+
+      - name: Package Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          bash scripts/package-linux.sh "${{ steps.metadata.outputs.version }}"
+
+      - name: Validate Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${{ steps.metadata.outputs.release_tag }}"
+          archive="dist/termcomm-i2p-$release_tag-linux-x86_64-musl.tar.gz"
+          package="termcomm-i2p-$release_tag-linux-x86_64-musl"
+          binary="target/x86_64-unknown-linux-musl/release/termcomm-i2p"
+
+          test -s "$archive"
+          file "$binary" | grep -Eq 'ELF 64-bit.*x86-64'
+          file "$binary" | grep -Eq 'static|statically linked'
+          rm -rf .linux-check
+          mkdir -p .linux-check
+          tar -xzf "$archive" -C .linux-check
+          test -x ".linux-check/$package/termcomm-i2p"
+          (
+            cd dist
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+  build-windows:
+    name: Build Windows x86_64
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      version: ${{ steps.metadata.outputs.version }}
+
+    steps:
+      - name: Check out selected revision
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read and validate release metadata
+        id: metadata
+        shell: pwsh
+        env:
+          REQUESTED_MODE: ${{ inputs.mode }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $metadataJson = cargo metadata `
+            --manifest-path Cargo.toml `
+            --no-deps `
+            --locked `
+            --format-version 1
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read workspace metadata." }
+
+          $metadata = $metadataJson | ConvertFrom-Json
+          $package = $metadata.packages |
+            Where-Object { $_.name -eq "termcomm-i2p" } |
+            Select-Object -First 1
+          if ($null -eq $package) {
+            throw "Unable to read termcomm-i2p version from workspace metadata."
+          }
+          $version = [string]$package.version
+          $expectedTag = "v$version"
+          $requestedTag = [string]$env:REQUESTED_TAG
+          $releaseTag = if ([string]::IsNullOrWhiteSpace($requestedTag)) {
+            $expectedTag
+          } else {
+            $requestedTag
+          }
+
+          if ($releaseTag -ne $expectedTag) {
+            throw "Release tag '$releaseTag' does not match workspace version '$expectedTag'."
+          }
+          if ($env:REQUESTED_MODE -eq "draft-release") {
+            if ([string]::IsNullOrWhiteSpace($requestedTag)) {
+              throw "release_tag is required when creating a draft release."
+            }
+            git show-ref --verify --quiet "refs/tags/$releaseTag"
+            if ($LASTEXITCODE -ne 0) { throw "Tag '$releaseTag' does not exist." }
+            $tagCommit = (git rev-list -n 1 $releaseTag).Trim()
+            $selectedCommit = (git rev-parse HEAD).Trim()
+            if ($tagCommit -ne $selectedCommit) {
+              throw "Tag '$releaseTag' does not point to the selected workflow revision."
+            }
+          }
+
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "release_tag=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_name=termcomm-i2p-$releaseTag-windows-x86_64" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Test workspace
+        shell: pwsh
+        run: |
+          cargo test --workspace --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build release binary
+        shell: pwsh
+        run: |
+          cargo build --release --locked --package termcomm-i2p
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package Windows artifact
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Version "${{ steps.metadata.outputs.version }}"
+
+      - name: Validate Windows artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Assert-X64Pe([string]$Path) {
+            $stream = [System.IO.File]::OpenRead($Path)
+            $reader = New-Object System.IO.BinaryReader($stream)
+            try {
+              if ($reader.ReadUInt16() -ne 0x5A4D) { throw "Not a PE executable: $Path" }
+              $stream.Position = 0x3C
+              $peOffset = $reader.ReadInt32()
+              $stream.Position = $peOffset
+              if ($reader.ReadUInt32() -ne 0x00004550) { throw "Invalid PE signature: $Path" }
+              if ($reader.ReadUInt16() -ne 0x8664) { throw "Executable is not x86_64: $Path" }
+            } finally {
+              $reader.Dispose()
+              $stream.Dispose()
+            }
+          }
+
+          $releaseTag = "${{ steps.metadata.outputs.release_tag }}"
+          $archive = "dist\termcomm-i2p-$releaseTag-windows-x86_64.zip"
+          $binary = "target\release\termcomm-i2p.exe"
+          foreach ($required in @($archive, $binary, "dist\SHA256SUMS")) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+              throw "Required Windows artifact is missing: $required"
+            }
+          }
+          Assert-X64Pe $binary
+
+          Remove-Item -LiteralPath ".windows-check" -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath $archive -DestinationPath ".windows-check"
+          $packagedBinary = ".windows-check\termcomm-i2p-$releaseTag-windows-x86_64\termcomm-i2p.exe"
+          if (-not (Test-Path -LiteralPath $packagedBinary -PathType Leaf)) {
+            throw "Packaged Windows binary is missing: $packagedBinary"
+          }
+
+          foreach ($line in Get-Content -LiteralPath "dist\SHA256SUMS") {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $parts = $line -split "  ", 2
+            if ($parts.Count -ne 2) { throw "Invalid checksum line: $line" }
+            $actual = (Get-FileHash -LiteralPath (Join-Path "dist" $parts[1]) -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $parts[0]) { throw "Checksum mismatch: $($parts[1])" }
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+  create-draft-release:
+    name: Create draft GitHub release
+    if: ${{ inputs.mode == 'draft-release' }}
+    needs:
+      - build-linux
+      - build-windows
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out selected revision
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build-linux.outputs.artifact_name }}
+          path: .release-input/linux
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build-windows.outputs.artifact_name }}
+          path: .release-input/windows
+
+      - name: Validate and combine release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${{ needs.build-linux.outputs.release_tag }}"
+          test "$release_tag" = "${{ needs.build-windows.outputs.release_tag }}"
+          test "${{ needs.build-linux.outputs.version }}" = "${{ needs.build-windows.outputs.version }}"
+          git show-ref --verify --quiet "refs/tags/$release_tag"
+          test "$(git rev-list -n 1 "$release_tag")" = "$(git rev-parse HEAD)"
+
+          (
+            cd .release-input/linux
+            sha256sum --check SHA256SUMS
+          )
+          (
+            cd .release-input/windows
+            sha256sum --check SHA256SUMS
+          )
+
+          mkdir -p dist
+          cp .release-input/linux/*.tar.gz dist/
+          cp .release-input/windows/*.zip dist/
+          (
+            cd dist
+            sha256sum *.tar.gz *.zip > SHA256SUMS
+          )
+
+      - name: Create draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build-linux.outputs.release_tag }}
+          VERSION: ${{ needs.build-linux.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release '$RELEASE_TAG' already exists." >&2
+            exit 1
+          fi
+
+          args=(
+            --draft
+            --generate-notes
+            --title "CommTools-I2P $VERSION"
+          )
+          if [[ "$PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${args[@]}" dist/*

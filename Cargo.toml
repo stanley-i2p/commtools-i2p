@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "crates/commtools-core",
+    "crates/commtools-runtime",
+    "crates/termcomm-i2p",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"

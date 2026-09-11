@@ -1,0 +1,22 @@
+/target/
+**/*.rs.bk
+
+# Release workflow output and validation directories.
+/dist/
+/.linux-package/
+/.windows-package/
+/.linux-check/
+/.windows-check/
+
+# Local development state.
+/.termcomm-i2p/
+/DEVELOPMENT_NOTES.md
+.env
+.env.local
+.DS_Store
+*.swp
+*.swo
+
+# IDE settings are local unless explicitly adopted by the project.
+/.idea/
+/.vscode/
