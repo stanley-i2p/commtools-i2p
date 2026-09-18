@@ -98,10 +98,10 @@ jobs:
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
 
   test-workspace:
-    name: Test workspace (Debian 11)
+    name: Test workspace (Debian 12)
     needs: metadata
     runs-on: ubuntu-24.04
-    container: rust:1.92-bullseye
+    container: rust:1.92-bookworm
     permissions:
       contents: read
 
@@ -136,12 +136,12 @@ jobs:
         run: cargo test --workspace --locked
 
   build-termcomm-linux:
-    name: Build TermComm Linux x86_64 GNU (Debian 11)
+    name: Build TermComm Linux x86_64 GNU (Debian 12)
     needs:
       - metadata
       - test-workspace
     runs-on: ubuntu-24.04
-    container: rust:1.92-bullseye
+    container: rust:1.92-bookworm
     permissions:
       contents: read
     outputs:
@@ -175,7 +175,7 @@ jobs:
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           bash scripts/package-linux.sh "${{ needs.metadata.outputs.version }}"
 
-      - name: Validate Linux artifact and Debian 11 ABI baseline
+      - name: Validate Linux artifact and Debian 12 ABI baseline
         shell: bash
         run: |
           set -euo pipefail
@@ -188,8 +188,8 @@ jobs:
           file "$binary" | grep -Eq 'ELF 64-bit.*x86-64'
           file "$binary" | grep -q 'dynamically linked'
           max_glibc="$(objdump -T "$binary" | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -n 1)"
-          if [[ "$(printf '%s\n' "$max_glibc" 'GLIBC_2.31' | sort -V | tail -n 1)" != 'GLIBC_2.31' ]]; then
-            echo "Binary requires $max_glibc, newer than the Debian 11 GLIBC_2.31 baseline." >&2
+          if [[ "$(printf '%s\n' "$max_glibc" 'GLIBC_2.36' | sort -V | tail -n 1)" != 'GLIBC_2.36' ]]; then
+            echo "Binary requires $max_glibc, newer than the Debian 12 GLIBC_2.36 baseline." >&2
             exit 1
           fi
           rm -rf .linux-check
@@ -212,12 +212,12 @@ jobs:
           retention-days: 30
 
   build-deskcomm-linux:
-    name: Build DeskComm Linux x86_64 GNU (Debian 11)
+    name: Build DeskComm Linux x86_64 GNU (Debian 12)
     needs:
       - metadata
       - test-workspace
     runs-on: ubuntu-24.04
-    container: rust:1.92-bullseye
+    container: rust:1.92-bookworm
     permissions:
       contents: read
     outputs:
@@ -265,7 +265,7 @@ jobs:
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           bash scripts/package-deskcomm-linux.sh "${{ needs.metadata.outputs.version }}"
 
-      - name: Validate Linux artifact and Debian 11 ABI baseline
+      - name: Validate Linux artifact and Debian 12 ABI baseline
         shell: bash
         run: |
           set -euo pipefail
@@ -279,8 +279,8 @@ jobs:
           file "$binary" | grep -q 'dynamically linked'
           ! ldd "$binary" | grep -q 'not found'
           max_glibc="$(objdump -T "$binary" | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -n 1)"
-          if [[ "$(printf '%s\n' "$max_glibc" 'GLIBC_2.31' | sort -V | tail -n 1)" != 'GLIBC_2.31' ]]; then
-            echo "Binary requires $max_glibc, newer than the Debian 11 GLIBC_2.31 baseline." >&2
+          if [[ "$(printf '%s\n' "$max_glibc" 'GLIBC_2.36' | sort -V | tail -n 1)" != 'GLIBC_2.36' ]]; then
+            echo "Binary requires $max_glibc, newer than the Debian 12 GLIBC_2.36 baseline." >&2
             exit 1
           fi
           rm -rf .linux-check
