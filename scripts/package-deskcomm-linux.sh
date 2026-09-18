@@ -10,9 +10,9 @@ version="$1"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd -- "$script_dir/.." && pwd)"
 dist_dir="$project_dir/dist"
-stage_dir="$project_dir/.linux-package"
-binary="$project_dir/target/release/termcomm-i2p"
-package_name="termcomm-i2p-v${version}-linux-x86_64-gnu"
+stage_dir="$project_dir/.deskcomm-linux-package"
+binary="$project_dir/target/release/deskcomm-i2p"
+package_name="deskcomm-i2p-v${version}-linux-x86_64-gnu"
 package_dir="$stage_dir/$package_name"
 
 if [[ ! -x "$binary" ]]; then
@@ -22,7 +22,7 @@ fi
 
 rm -rf -- "$stage_dir" "$dist_dir"
 mkdir -p -- "$package_dir" "$dist_dir"
-install -m 755 -- "$binary" "$package_dir/termcomm-i2p"
+install -m 755 -- "$binary" "$package_dir/deskcomm-i2p"
 
 tar \
     --sort=name \

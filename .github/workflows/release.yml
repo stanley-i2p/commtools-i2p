@@ -26,13 +26,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-linux:
-    name: Build Linux x86_64 (musl)
+  metadata:
+    name: Validate release metadata
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
-      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
       release_tag: ${{ steps.metadata.outputs.release_tag }}
       version: ${{ steps.metadata.outputs.version }}
 
@@ -52,20 +51,27 @@ jobs:
         run: |
           set -euo pipefail
 
-          version="$(
+          versions="$(
             cargo metadata \
               --manifest-path Cargo.toml \
               --no-deps \
               --locked \
               --format-version 1 \
-              | jq -r '.packages[] | select(.name == "termcomm-i2p") | .version'
+              | jq -r '.packages[] | select(.name == "termcomm-i2p" or .name == "deskcomm-i2p") | "\(.name)=\(.version)"'
           )"
+          termcomm_version="$(printf '%s\n' "$versions" | sed -n 's/^termcomm-i2p=//p')"
+          deskcomm_version="$(printf '%s\n' "$versions" | sed -n 's/^deskcomm-i2p=//p')"
 
-          if [[ -z "$version" || "$version" == "null" ]]; then
-            echo "Unable to read termcomm-i2p version from workspace metadata." >&2
+          if [[ -z "$termcomm_version" || -z "$deskcomm_version" ]]; then
+            echo "Unable to read both client versions from workspace metadata." >&2
+            exit 1
+          fi
+          if [[ "$termcomm_version" != "$deskcomm_version" ]]; then
+            echo "Client versions differ: TermComm=$termcomm_version DeskComm=$deskcomm_version." >&2
             exit 1
           fi
 
+          version="$termcomm_version"
           expected_tag="v${version}"
           release_tag="${REQUESTED_TAG:-$expected_tag}"
           if [[ "$release_tag" != "$expected_tag" ]]; then
@@ -90,41 +96,102 @@ jobs:
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=termcomm-i2p-$release_tag-linux-x86_64-musl" >> "$GITHUB_OUTPUT"
 
-      - name: Install musl build target
+  test-workspace:
+    name: Test workspace (Debian 11)
+    needs: metadata
+    runs-on: ubuntu-24.04
+    container: rust:1.92-bullseye
+    permissions:
+      contents: read
+
+    steps:
+      - name: Install Linux build dependencies
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends file musl-tools
-          rustup target add x86_64-unknown-linux-musl
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            ca-certificates \
+            cmake \
+            git \
+            libegl1-mesa-dev \
+            libfontconfig1-dev \
+            libgl1-mesa-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      - name: Check out selected revision
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Test workspace
         run: cargo test --workspace --locked
 
+  build-termcomm-linux:
+    name: Build TermComm Linux x86_64 GNU (Debian 11)
+    needs:
+      - metadata
+      - test-workspace
+    runs-on: ubuntu-24.04
+    container: rust:1.92-bullseye
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.names.outputs.artifact_name }}
+
+    steps:
+      - name: Install packaging tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install --yes --no-install-recommends file git
+
+      - name: Check out selected revision
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Define artifact name
+        id: names
+        shell: bash
+        run: echo "artifact_name=termcomm-i2p-${{ needs.metadata.outputs.release_tag }}-linux-x86_64-gnu" >> "$GITHUB_OUTPUT"
+
       - name: Build release binary
-        run: cargo build --release --locked --package termcomm-i2p --target x86_64-unknown-linux-musl
+        run: cargo build --release --locked --package termcomm-i2p
 
       - name: Package Linux artifact
         shell: bash
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
-          bash scripts/package-linux.sh "${{ steps.metadata.outputs.version }}"
+          bash scripts/package-linux.sh "${{ needs.metadata.outputs.version }}"
 
-      - name: Validate Linux artifact
+      - name: Validate Linux artifact and Debian 11 ABI baseline
         shell: bash
         run: |
           set -euo pipefail
-          release_tag="${{ steps.metadata.outputs.release_tag }}"
-          archive="dist/termcomm-i2p-$release_tag-linux-x86_64-musl.tar.gz"
-          package="termcomm-i2p-$release_tag-linux-x86_64-musl"
-          binary="target/x86_64-unknown-linux-musl/release/termcomm-i2p"
+          release_tag="${{ needs.metadata.outputs.release_tag }}"
+          archive="dist/termcomm-i2p-$release_tag-linux-x86_64-gnu.tar.gz"
+          package="termcomm-i2p-$release_tag-linux-x86_64-gnu"
+          binary="target/release/termcomm-i2p"
 
           test -s "$archive"
           file "$binary" | grep -Eq 'ELF 64-bit.*x86-64'
-          file "$binary" | grep -Eq 'static|statically linked'
+          file "$binary" | grep -q 'dynamically linked'
+          max_glibc="$(objdump -T "$binary" | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -n 1)"
+          if [[ "$(printf '%s\n' "$max_glibc" 'GLIBC_2.31' | sort -V | tail -n 1)" != 'GLIBC_2.31' ]]; then
+            echo "Binary requires $max_glibc, newer than the Debian 11 GLIBC_2.31 baseline." >&2
+            exit 1
+          fi
           rm -rf .linux-check
           mkdir -p .linux-check
           tar -xzf "$archive" -C .linux-check
@@ -134,91 +201,130 @@ jobs:
             sha256sum --check SHA256SUMS
           )
 
-      - name: Upload Linux artifacts
+      - name: Upload TermComm Linux artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.metadata.outputs.artifact_name }}
+          name: ${{ steps.names.outputs.artifact_name }}
           path: |
             dist/*.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 30
 
-  build-windows:
-    name: Build Windows x86_64
+  build-deskcomm-linux:
+    name: Build DeskComm Linux x86_64 GNU (Debian 11)
+    needs:
+      - metadata
+      - test-workspace
+    runs-on: ubuntu-24.04
+    container: rust:1.92-bullseye
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.names.outputs.artifact_name }}
+
+    steps:
+      - name: Install Linux GUI and packaging dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            cmake \
+            file \
+            git \
+            libegl1-mesa-dev \
+            libfontconfig1-dev \
+            libgl1-mesa-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      - name: Check out selected revision
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Define artifact name
+        id: names
+        shell: bash
+        run: echo "artifact_name=deskcomm-i2p-${{ needs.metadata.outputs.release_tag }}-linux-x86_64-gnu" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary
+        run: cargo build --release --locked --package deskcomm-i2p
+
+      - name: Package Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          bash scripts/package-deskcomm-linux.sh "${{ needs.metadata.outputs.version }}"
+
+      - name: Validate Linux artifact and Debian 11 ABI baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${{ needs.metadata.outputs.release_tag }}"
+          archive="dist/deskcomm-i2p-$release_tag-linux-x86_64-gnu.tar.gz"
+          package="deskcomm-i2p-$release_tag-linux-x86_64-gnu"
+          binary="target/release/deskcomm-i2p"
+
+          test -s "$archive"
+          file "$binary" | grep -Eq 'ELF 64-bit.*x86-64'
+          file "$binary" | grep -q 'dynamically linked'
+          ! ldd "$binary" | grep -q 'not found'
+          max_glibc="$(objdump -T "$binary" | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -n 1)"
+          if [[ "$(printf '%s\n' "$max_glibc" 'GLIBC_2.31' | sort -V | tail -n 1)" != 'GLIBC_2.31' ]]; then
+            echo "Binary requires $max_glibc, newer than the Debian 11 GLIBC_2.31 baseline." >&2
+            exit 1
+          fi
+          rm -rf .linux-check
+          mkdir -p .linux-check
+          tar -xzf "$archive" -C .linux-check
+          test -x ".linux-check/$package/deskcomm-i2p"
+          (
+            cd dist
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Upload DeskComm Linux artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.names.outputs.artifact_name }}
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+  build-termcomm-windows:
+    name: Build TermComm Windows x86_64
+    needs:
+      - metadata
+      - test-workspace
     runs-on: windows-2022
     permissions:
       contents: read
     outputs:
-      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
-      release_tag: ${{ steps.metadata.outputs.release_tag }}
-      version: ${{ steps.metadata.outputs.version }}
+      artifact_name: ${{ steps.names.outputs.artifact_name }}
 
     steps:
       - name: Check out selected revision
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
           persist-credentials: false
 
-      - name: Read and validate release metadata
-        id: metadata
+      - name: Define artifact name
+        id: names
         shell: pwsh
-        env:
-          REQUESTED_MODE: ${{ inputs.mode }}
-          REQUESTED_TAG: ${{ inputs.release_tag }}
         run: |
-          $ErrorActionPreference = "Stop"
-
-          $metadataJson = cargo metadata `
-            --manifest-path Cargo.toml `
-            --no-deps `
-            --locked `
-            --format-version 1
-          if ($LASTEXITCODE -ne 0) { throw "Unable to read workspace metadata." }
-
-          $metadata = $metadataJson | ConvertFrom-Json
-          $package = $metadata.packages |
-            Where-Object { $_.name -eq "termcomm-i2p" } |
-            Select-Object -First 1
-          if ($null -eq $package) {
-            throw "Unable to read termcomm-i2p version from workspace metadata."
-          }
-          $version = [string]$package.version
-          $expectedTag = "v$version"
-          $requestedTag = [string]$env:REQUESTED_TAG
-          $releaseTag = if ([string]::IsNullOrWhiteSpace($requestedTag)) {
-            $expectedTag
-          } else {
-            $requestedTag
-          }
-
-          if ($releaseTag -ne $expectedTag) {
-            throw "Release tag '$releaseTag' does not match workspace version '$expectedTag'."
-          }
-          if ($env:REQUESTED_MODE -eq "draft-release") {
-            if ([string]::IsNullOrWhiteSpace($requestedTag)) {
-              throw "release_tag is required when creating a draft release."
-            }
-            git show-ref --verify --quiet "refs/tags/$releaseTag"
-            if ($LASTEXITCODE -ne 0) { throw "Tag '$releaseTag' does not exist." }
-            $tagCommit = (git rev-list -n 1 $releaseTag).Trim()
-            $selectedCommit = (git rev-parse HEAD).Trim()
-            if ($tagCommit -ne $selectedCommit) {
-              throw "Tag '$releaseTag' does not point to the selected workflow revision."
-            }
-          }
-
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "release_tag=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "artifact_name=termcomm-i2p-$releaseTag-windows-x86_64" |
+          "artifact_name=termcomm-i2p-${{ needs.metadata.outputs.release_tag }}-windows-x86_64" |
             Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Test workspace
-        shell: pwsh
-        run: |
-          cargo test --workspace --locked
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build release binary
         shell: pwsh
@@ -228,58 +334,64 @@ jobs:
 
       - name: Package Windows artifact
         shell: pwsh
-        run: ./scripts/package-windows.ps1 -Version "${{ steps.metadata.outputs.version }}"
+        run: ./scripts/package-windows.ps1 -Version "${{ needs.metadata.outputs.version }}"
 
       - name: Validate Windows artifact
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
+        run: ./scripts/validate-windows-package.ps1 -Product "termcomm-i2p" -ReleaseTag "${{ needs.metadata.outputs.release_tag }}"
 
-          function Assert-X64Pe([string]$Path) {
-            $stream = [System.IO.File]::OpenRead($Path)
-            $reader = New-Object System.IO.BinaryReader($stream)
-            try {
-              if ($reader.ReadUInt16() -ne 0x5A4D) { throw "Not a PE executable: $Path" }
-              $stream.Position = 0x3C
-              $peOffset = $reader.ReadInt32()
-              $stream.Position = $peOffset
-              if ($reader.ReadUInt32() -ne 0x00004550) { throw "Invalid PE signature: $Path" }
-              if ($reader.ReadUInt16() -ne 0x8664) { throw "Executable is not x86_64: $Path" }
-            } finally {
-              $reader.Dispose()
-              $stream.Dispose()
-            }
-          }
-
-          $releaseTag = "${{ steps.metadata.outputs.release_tag }}"
-          $archive = "dist\termcomm-i2p-$releaseTag-windows-x86_64.zip"
-          $binary = "target\release\termcomm-i2p.exe"
-          foreach ($required in @($archive, $binary, "dist\SHA256SUMS")) {
-            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
-              throw "Required Windows artifact is missing: $required"
-            }
-          }
-          Assert-X64Pe $binary
-
-          Remove-Item -LiteralPath ".windows-check" -Recurse -Force -ErrorAction SilentlyContinue
-          Expand-Archive -LiteralPath $archive -DestinationPath ".windows-check"
-          $packagedBinary = ".windows-check\termcomm-i2p-$releaseTag-windows-x86_64\termcomm-i2p.exe"
-          if (-not (Test-Path -LiteralPath $packagedBinary -PathType Leaf)) {
-            throw "Packaged Windows binary is missing: $packagedBinary"
-          }
-
-          foreach ($line in Get-Content -LiteralPath "dist\SHA256SUMS") {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            $parts = $line -split "  ", 2
-            if ($parts.Count -ne 2) { throw "Invalid checksum line: $line" }
-            $actual = (Get-FileHash -LiteralPath (Join-Path "dist" $parts[1]) -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actual -ne $parts[0]) { throw "Checksum mismatch: $($parts[1])" }
-          }
-
-      - name: Upload Windows artifacts
+      - name: Upload TermComm Windows artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.metadata.outputs.artifact_name }}
+          name: ${{ steps.names.outputs.artifact_name }}
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+  build-deskcomm-windows:
+    name: Build DeskComm Windows x86_64
+    needs:
+      - metadata
+      - test-workspace
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.names.outputs.artifact_name }}
+
+    steps:
+      - name: Check out selected revision
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Define artifact name
+        id: names
+        shell: pwsh
+        run: |
+          "artifact_name=deskcomm-i2p-${{ needs.metadata.outputs.release_tag }}-windows-x86_64" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build release binary
+        shell: pwsh
+        run: |
+          cargo build --release --locked --package deskcomm-i2p
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package Windows artifact
+        shell: pwsh
+        run: ./scripts/package-deskcomm-windows.ps1 -Version "${{ needs.metadata.outputs.version }}"
+
+      - name: Validate Windows artifact
+        shell: pwsh
+        run: ./scripts/validate-windows-package.ps1 -Product "deskcomm-i2p" -ReleaseTag "${{ needs.metadata.outputs.release_tag }}"
+
+      - name: Upload DeskComm Windows artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.names.outputs.artifact_name }}
           path: |
             dist/*.zip
             dist/SHA256SUMS
@@ -290,8 +402,11 @@ jobs:
     name: Create draft GitHub release
     if: ${{ inputs.mode == 'draft-release' }}
     needs:
-      - build-linux
-      - build-windows
+      - metadata
+      - build-termcomm-linux
+      - build-deskcomm-linux
+      - build-termcomm-windows
+      - build-deskcomm-windows
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -303,40 +418,48 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Download Linux artifacts
+      - name: Download TermComm Linux artifacts
         uses: actions/download-artifact@v8
         with:
-          name: ${{ needs.build-linux.outputs.artifact_name }}
-          path: .release-input/linux
+          name: ${{ needs.build-termcomm-linux.outputs.artifact_name }}
+          path: .release-input/termcomm-linux
 
-      - name: Download Windows artifacts
+      - name: Download DeskComm Linux artifacts
         uses: actions/download-artifact@v8
         with:
-          name: ${{ needs.build-windows.outputs.artifact_name }}
-          path: .release-input/windows
+          name: ${{ needs.build-deskcomm-linux.outputs.artifact_name }}
+          path: .release-input/deskcomm-linux
+
+      - name: Download TermComm Windows artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build-termcomm-windows.outputs.artifact_name }}
+          path: .release-input/termcomm-windows
+
+      - name: Download DeskComm Windows artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build-deskcomm-windows.outputs.artifact_name }}
+          path: .release-input/deskcomm-windows
 
       - name: Validate and combine release artifacts
         shell: bash
         run: |
           set -euo pipefail
-          release_tag="${{ needs.build-linux.outputs.release_tag }}"
-          test "$release_tag" = "${{ needs.build-windows.outputs.release_tag }}"
-          test "${{ needs.build-linux.outputs.version }}" = "${{ needs.build-windows.outputs.version }}"
+          release_tag="${{ needs.metadata.outputs.release_tag }}"
           git show-ref --verify --quiet "refs/tags/$release_tag"
           test "$(git rev-list -n 1 "$release_tag")" = "$(git rev-parse HEAD)"
 
-          (
-            cd .release-input/linux
-            sha256sum --check SHA256SUMS
-          )
-          (
-            cd .release-input/windows
-            sha256sum --check SHA256SUMS
-          )
+          for directory in .release-input/*; do
+            (
+              cd "$directory"
+              sha256sum --check SHA256SUMS
+            )
+          done
 
           mkdir -p dist
-          cp .release-input/linux/*.tar.gz dist/
-          cp .release-input/windows/*.zip dist/
+          find .release-input -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp '{}' dist/ \;
+          test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 4
           (
             cd dist
             sha256sum *.tar.gz *.zip > SHA256SUMS
@@ -346,8 +469,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.build-linux.outputs.release_tag }}
-          VERSION: ${{ needs.build-linux.outputs.version }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
           PRERELEASE: ${{ inputs.prerelease }}
         run: |
           set -euo pipefail

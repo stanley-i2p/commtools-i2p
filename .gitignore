@@ -4,7 +4,9 @@
 # Release workflow output and validation directories.
 /dist/
 /.linux-package/
+/.deskcomm-linux-package/
 /.windows-package/
+/.deskcomm-windows-package/
 /.linux-check/
 /.windows-check/
 
