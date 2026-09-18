@@ -78,6 +78,8 @@ use tokio::task::JoinHandle;
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(500);
 const COMPLETION_QUEUE_CAPACITY: usize = 1_024;
 const SEND_QUEUE_CAPACITY: usize = 256;
+const IMAGE_SEND_BURST_FRAMES: usize = 1;
+const BULK_SEND_PACING_INTERVAL: Duration = Duration::from_millis(20);
 const FILE_PROGRESS_STEP_BYTES: u64 = 256 * 1024;
 const FILE_OFFER_TIMEOUT_MS: u64 = 60_000;
 const SAM_LIVENESS_PROBE_INTERVAL_MS: u64 = 10_000;
@@ -86,6 +88,46 @@ const SAM_LIVENESS_FAILURE_THRESHOLD: u8 = 3;
 const ORIGINAL_IMAGE_CACHE_MAX_ITEMS: usize = 8;
 const ORIGINAL_IMAGE_CACHE_MAX_BYTES: usize = 100 * 1024 * 1024;
 const DEADDROP_STATS_FLUSH_INTERVAL_MS: u64 = 15_000;
+const DEFAULT_SAM_SESSION_PREFIX: &str = "termcomm";
+const MAX_SAM_SESSION_PREFIX_BYTES: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationDriverConfig {
+    sam_session_prefix: String,
+}
+
+impl ApplicationDriverConfig {
+    pub fn new(sam_session_prefix: impl Into<String>) -> Result<Self, DriverConfigError> {
+        let sam_session_prefix = sam_session_prefix.into();
+        if sam_session_prefix.is_empty()
+            || sam_session_prefix.len() > MAX_SAM_SESSION_PREFIX_BYTES
+            || !sam_session_prefix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(DriverConfigError::InvalidSamSessionPrefix);
+        }
+        Ok(Self { sam_session_prefix })
+    }
+
+    pub fn sam_session_prefix(&self) -> &str {
+        &self.sam_session_prefix
+    }
+}
+
+impl Default for ApplicationDriverConfig {
+    fn default() -> Self {
+        Self {
+            sam_session_prefix: DEFAULT_SAM_SESSION_PREFIX.into(),
+        }
+    }
+}
+
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum DriverConfigError {
+    #[error("SAM session prefix must be 1 to 32 ASCII letters, digits, or underscores")]
+    InvalidSamSessionPrefix,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryWriteOutcome {
@@ -299,6 +341,7 @@ impl SessionTransport {
 /// Executes `ApplicationCoordinator` actions using concrete Tokio-backed
 /// resources while keeping protocol and lifecycle policy in the coordinator.
 pub struct ApplicationDriver {
+    config: ApplicationDriverConfig,
     coordinator: ApplicationCoordinator,
     resources: BTreeMap<SessionId, SessionResources>,
     vault: Option<UnlockedVault>,
@@ -338,12 +381,24 @@ pub struct ApplicationDriver {
 
 impl ApplicationDriver {
     pub fn new(vault: UnlockedVault) -> Self {
-        Self::with_optional_vault(Some(vault))
+        Self::with_config(vault, ApplicationDriverConfig::default())
+    }
+
+    pub fn with_config(vault: UnlockedVault, config: ApplicationDriverConfig) -> Self {
+        Self::with_optional_vault_and_config(Some(vault), config)
     }
 
     fn with_optional_vault(vault: Option<UnlockedVault>) -> Self {
+        Self::with_optional_vault_and_config(vault, ApplicationDriverConfig::default())
+    }
+
+    fn with_optional_vault_and_config(
+        vault: Option<UnlockedVault>,
+        config: ApplicationDriverConfig,
+    ) -> Self {
         let (completions_tx, completions_rx) = mpsc::channel(COMPLETION_QUEUE_CAPACITY);
         Self {
+            config,
             coordinator: ApplicationCoordinator::new(),
             resources: BTreeMap::new(),
             vault,
@@ -1514,7 +1569,11 @@ impl ApplicationDriver {
             .cloned()
             .ok_or_else(|| DriverError::ContactNotFound(contact_id.clone()))?;
         let endpoint = vault.snapshot().settings.sam_endpoint()?;
-        let plan = build_contact_bootstrap_plan(&contact, endpoint.clone())?;
+        let plan = build_contact_bootstrap_plan_with_prefix(
+            &contact,
+            endpoint.clone(),
+            self.config.sam_session_prefix(),
+        )?;
         let runtime = SamRuntime::new(endpoint);
         self.pending_contact_opens.insert(
             contact_id.clone(),
@@ -1574,9 +1633,12 @@ impl ApplicationDriver {
 
         let task_id = transient_id.clone();
         let task_runtime = runtime.clone();
+        let sam_session_prefix = self.config.sam_session_prefix().to_string();
         let tx = self.completions_tx.clone();
         if let Err(error) = self.spawn(async move {
-            let result = prepare_transient(task_runtime.clone(), &task_id, tunnels).await;
+            let result =
+                prepare_transient(task_runtime.clone(), &task_id, tunnels, &sam_session_prefix)
+                    .await;
             if result.is_err() {
                 let _ = task_runtime.shutdown().await;
             }
@@ -1616,7 +1678,11 @@ impl ApplicationDriver {
             .ok_or_else(|| DriverError::GroupNotFound(group_id.clone()))?;
         let endpoint = vault.snapshot().settings.sam_endpoint()?;
         let default_tunnels = vault.snapshot().settings.default_tunnels;
-        let plan = build_group_bootstrap_plan(&group, default_tunnels)?;
+        let plan = build_group_bootstrap_plan_with_prefix(
+            &group,
+            default_tunnels,
+            self.config.sam_session_prefix(),
+        )?;
         let runtime = SamRuntime::new(endpoint);
         self.pending_group_opens.insert(
             group_id.clone(),
@@ -2277,6 +2343,9 @@ impl ApplicationDriver {
         }
         let control = OriginalImageControl::Request(media_id);
         if key.sender_b32.is_empty() {
+            if let Some(resources) = self.resources.get_mut(&session_id) {
+                resources.incoming_image.allow_original(media_id);
+            }
             self.send_contact_frame(
                 session_id,
                 MessageType::J,
@@ -2313,6 +2382,9 @@ impl ApplicationDriver {
         }
         let control = OriginalImageControl::Cancel(media_id);
         if key.sender_b32.is_empty() {
+            if let Some(resources) = self.resources.get_mut(&session_id) {
+                resources.incoming_image.cancel_original(media_id);
+            }
             self.send_contact_frame(
                 session_id,
                 MessageType::J,
@@ -2321,9 +2393,6 @@ impl ApplicationDriver {
                     .encode()
                     .map_err(|error| DriverError::InvalidImageFile(error.to_string()))?,
             )?;
-            if let Some(resources) = self.resources.get_mut(&session_id) {
-                resources.incoming_image.reset();
-            }
         } else {
             let output = self.coordinator.send_group_original_image_control(
                 session_id,
@@ -2500,13 +2569,7 @@ impl ApplicationDriver {
                 .collect::<Result<Vec<_>, _>>()?;
             (connection_id, frames)
         };
-        self.schedule_send_sequence(
-            session_id,
-            connection_id,
-            None,
-            frames,
-            "send 1:1 image sequence",
-        )
+        self.schedule_image_sequence(session_id, connection_id, frames, "send 1:1 image sequence")
     }
 
     fn send_contact_original_image(
@@ -2549,7 +2612,7 @@ impl ApplicationDriver {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.outgoing_original_cancels
             .insert(key.clone(), cancel.clone());
-        self.schedule_cancellable_send_sequence(
+        self.schedule_original_image_sequence(
             session_id,
             connection_id,
             frames,
@@ -5095,10 +5158,9 @@ impl ApplicationDriver {
             GroupSessionAction::SendFrames {
                 connection_id,
                 frames,
-            } => self.schedule_send_sequence(
+            } => self.schedule_image_sequence(
                 session_id,
                 connection_id,
-                None,
                 frames,
                 "send group frame sequence",
             ),
@@ -5116,7 +5178,7 @@ impl ApplicationDriver {
                 let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 self.outgoing_original_cancels
                     .insert(key.clone(), cancel.clone());
-                self.schedule_cancellable_send_sequence(
+                self.schedule_original_image_sequence(
                     session_id,
                     connection_id,
                     frames,
@@ -5237,7 +5299,27 @@ impl ApplicationDriver {
         )
     }
 
-    fn schedule_cancellable_send_sequence(
+    fn schedule_image_sequence(
+        &mut self,
+        session_id: SessionId,
+        connection_id: ConnectionId,
+        frames: Vec<Frame>,
+        operation: &'static str,
+    ) -> Result<(), DriverError> {
+        self.send_connection_job(
+            session_id,
+            connection_id,
+            SendJob::ImageSequence {
+                frames,
+                cancel: None,
+                completion: SendCompletion::None,
+                operation,
+            },
+            operation,
+        )
+    }
+
+    fn schedule_original_image_sequence(
         &mut self,
         session_id: SessionId,
         connection_id: ConnectionId,
@@ -5249,10 +5331,10 @@ impl ApplicationDriver {
         self.send_connection_job(
             session_id,
             connection_id,
-            SendJob::CancellableSequence {
+            SendJob::ImageSequence {
                 frames,
-                cancel,
-                key,
+                cancel: Some(cancel.clone()),
+                completion: SendCompletion::OriginalImage { key, cancel },
                 operation,
             },
             operation,
@@ -5557,20 +5639,27 @@ impl ApplicationDriver {
                 if !self.resources.contains_key(&session_id) {
                     return Ok(());
                 }
-                if let SendCompletion::OriginalImage(key) = &completion {
+                let offline_index_sync = matches!(&completion, SendCompletion::OfflineIndexSync);
+                if let SendCompletion::OriginalImage { key, cancel } = &completion
+                    && self
+                        .outgoing_original_cancels
+                        .get(key)
+                        .is_some_and(|active| std::sync::Arc::ptr_eq(active, cancel))
+                {
                     self.outgoing_original_cancels.remove(key);
                 }
                 match result {
-                    Ok(()) => {
-                        if completion == SendCompletion::OfflineIndexSync {
+                    Ok(SendOutcome::Completed) => {
+                        if offline_index_sync {
                             let output = self
                                 .coordinator
                                 .offline_index_sync_sent(session_id, connection_id)?;
                             self.process_output(output)?;
                         }
                     }
+                    Ok(SendOutcome::Cancelled) => {}
                     Err(reason) => {
-                        if completion == SendCompletion::OfflineIndexSync {
+                        if offline_index_sync {
                             let output = self.coordinator.offline_index_sync_send_failed(
                                 session_id,
                                 connection_id,
@@ -6818,11 +6907,20 @@ fn create_incoming_file(
     Err("could not allocate a unique received-file path".into())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum SendCompletion {
     None,
     OfflineIndexSync,
-    OriginalImage(OriginalImageKey),
+    OriginalImage {
+        key: OriginalImageKey,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SendOutcome {
+    Completed,
+    Cancelled,
 }
 
 enum SendJob {
@@ -6832,10 +6930,10 @@ enum SendJob {
         completion: SendCompletion,
         operation: &'static str,
     },
-    CancellableSequence {
+    ImageSequence {
         frames: Vec<Frame>,
-        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        key: OriginalImageKey,
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        completion: SendCompletion,
         operation: &'static str,
     },
     File {
@@ -6866,6 +6964,64 @@ struct OutgoingFileSend {
     sealer: FileFrameSealer,
     sent_bytes: u64,
     last_reported_bytes: u64,
+}
+
+struct OutgoingImageSend {
+    frames: VecDeque<Frame>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    completion: SendCompletion,
+    operation: &'static str,
+}
+
+impl OutgoingImageSend {
+    fn new(
+        frames: Vec<Frame>,
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        completion: SendCompletion,
+        operation: &'static str,
+    ) -> Self {
+        Self {
+            frames: frames.into(),
+            cancel,
+            completion,
+            operation,
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    fn next_frame(&mut self) -> ImageSendStep {
+        if self.is_cancelled() {
+            ImageSendStep::Cancelled
+        } else {
+            self.frames
+                .pop_front()
+                .map_or(ImageSendStep::Completed, ImageSendStep::Frame)
+        }
+    }
+}
+
+enum ImageSendStep {
+    Frame(Frame),
+    Completed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageBurstOutcome {
+    Continue,
+    Completed,
+    Cancelled,
+}
+
+enum SendWorkerWake {
+    Job(SendJob),
+    BulkReady,
+    QueueClosed,
 }
 
 struct FileSendStep {
@@ -6954,31 +7110,113 @@ async fn run_send_worker(
     completions: mpsc::Sender<Completion>,
 ) {
     let mut active_file = None;
+    let mut active_image = None;
+    let mut queued_images = VecDeque::new();
+    let mut next_bulk_send_at = tokio::time::Instant::now();
     loop {
-        let job = if active_file.is_some() {
-            match jobs.try_recv() {
-                Ok(job) => Some(job),
-                Err(mpsc::error::TryRecvError::Empty) => None,
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    finish_active_file(
-                        &mut active_file,
-                        &completions,
-                        session_id,
-                        Err("file transfer interrupted because the send queue closed".into()),
-                    )
-                    .await;
-                    let _ = runtime.close_stream(&connection).await;
+        if active_image.is_none() {
+            active_image = queued_images.pop_front();
+        }
+        let wake = wait_for_send_work(
+            &mut jobs,
+            active_file.is_some() || active_image.is_some(),
+            next_bulk_send_at,
+        )
+        .await;
+        let job = match wake {
+            SendWorkerWake::Job(job) => Some(job),
+            SendWorkerWake::BulkReady => None,
+            SendWorkerWake::QueueClosed => {
+                if active_file.is_none() && active_image.is_none() && queued_images.is_empty() {
                     break;
                 }
-            }
-        } else {
-            let Some(job) = jobs.recv().await else {
+                finish_active_file(
+                    &mut active_file,
+                    &completions,
+                    session_id,
+                    Err("file transfer interrupted because the send queue closed".into()),
+                )
+                .await;
+                finish_all_images(
+                    &mut active_image,
+                    &mut queued_images,
+                    &completions,
+                    session_id,
+                    connection_id,
+                    Ok(SendOutcome::Cancelled),
+                )
+                .await;
+                let _ = runtime.close_stream(&connection).await;
                 break;
-            };
-            Some(job)
+            }
         };
 
         let Some(job) = job else {
+            if active_image.is_some() {
+                match send_active_image_burst(&runtime, &connection, &mut active_image).await {
+                    Ok(ImageBurstOutcome::Continue) => {
+                        next_bulk_send_at = tokio::time::Instant::now() + BULK_SEND_PACING_INTERVAL;
+                    }
+                    Ok(ImageBurstOutcome::Completed) => {
+                        next_bulk_send_at = tokio::time::Instant::now() + BULK_SEND_PACING_INTERVAL;
+                        finish_active_image(
+                            &mut active_image,
+                            &completions,
+                            session_id,
+                            connection_id,
+                            Ok(SendOutcome::Completed),
+                        )
+                        .await;
+                    }
+                    Ok(ImageBurstOutcome::Cancelled) => {
+                        finish_active_image(
+                            &mut active_image,
+                            &completions,
+                            session_id,
+                            connection_id,
+                            Ok(SendOutcome::Cancelled),
+                        )
+                        .await;
+                    }
+                    Err(reason) => {
+                        finish_active_image(
+                            &mut active_image,
+                            &completions,
+                            session_id,
+                            connection_id,
+                            Err(reason),
+                        )
+                        .await;
+                        finish_all_images(
+                            &mut active_image,
+                            &mut queued_images,
+                            &completions,
+                            session_id,
+                            connection_id,
+                            Err("image transfer interrupted by a failed connection send".into()),
+                        )
+                        .await;
+                        finish_active_file(
+                            &mut active_file,
+                            &completions,
+                            session_id,
+                            Err("file transfer interrupted by a failed connection send".into()),
+                        )
+                        .await;
+                        close_after_send_failure(
+                            &runtime,
+                            &connection,
+                            &completions,
+                            session_id,
+                            connection_id,
+                            "close stream after failed image send",
+                        )
+                        .await;
+                        break;
+                    }
+                }
+                continue;
+            }
             let step = match active_file
                 .as_mut()
                 .expect("active file was checked")
@@ -7019,6 +7257,7 @@ async fn run_send_worker(
                 .await;
                 break;
             }
+            next_bulk_send_at = tokio::time::Instant::now() + BULK_SEND_PACING_INTERVAL;
             if let Some(transferred_bytes) = step.progress {
                 let transfer = active_file.as_ref().expect("active file was checked");
                 if completions
@@ -7047,8 +7286,9 @@ async fn run_send_worker(
                 completion,
                 operation,
             } => {
-                let result =
-                    send_sequence(&runtime, &connection, destination_prelude, frames).await;
+                let result = send_sequence(&runtime, &connection, destination_prelude, frames)
+                    .await
+                    .map(|()| SendOutcome::Completed);
                 let failed = result.is_err();
                 let _ = completions
                     .send(Completion::SendFinished {
@@ -7060,6 +7300,15 @@ async fn run_send_worker(
                     })
                     .await;
                 if failed {
+                    finish_all_images(
+                        &mut active_image,
+                        &mut queued_images,
+                        &completions,
+                        session_id,
+                        connection_id,
+                        Err("image transfer interrupted by a failed connection send".into()),
+                    )
+                    .await;
                     finish_active_file(
                         &mut active_file,
                         &completions,
@@ -7079,42 +7328,17 @@ async fn run_send_worker(
                     break;
                 }
             }
-            SendJob::CancellableSequence {
+            SendJob::ImageSequence {
                 frames,
                 cancel,
-                key,
+                completion,
                 operation,
             } => {
-                let result =
-                    send_cancellable_sequence(&runtime, &connection, frames, &cancel).await;
-                let failed = result.is_err();
-                let _ = completions
-                    .send(Completion::SendFinished {
-                        session_id,
-                        connection_id,
-                        completion: SendCompletion::OriginalImage(key),
-                        operation,
-                        result,
-                    })
-                    .await;
-                if failed {
-                    finish_active_file(
-                        &mut active_file,
-                        &completions,
-                        session_id,
-                        Err("file transfer interrupted by a failed connection send".into()),
-                    )
-                    .await;
-                    close_after_send_failure(
-                        &runtime,
-                        &connection,
-                        &completions,
-                        session_id,
-                        connection_id,
-                        "close stream after failed send",
-                    )
-                    .await;
-                    break;
+                let image = OutgoingImageSend::new(frames, cancel, completion, operation);
+                if active_image.is_none() {
+                    active_image = Some(image);
+                } else {
+                    queued_images.push_back(image);
                 }
             }
             SendJob::File {
@@ -7170,6 +7394,15 @@ async fn run_send_worker(
                     Err("file transfer interrupted by connection shutdown".into()),
                 )
                 .await;
+                finish_all_images(
+                    &mut active_image,
+                    &mut queued_images,
+                    &completions,
+                    session_id,
+                    connection_id,
+                    Ok(SendOutcome::Cancelled),
+                )
+                .await;
                 let send_result = runtime
                     .send_frame(&connection, &frame)
                     .await
@@ -7197,6 +7430,15 @@ async fn run_send_worker(
                     Err("file transfer interrupted by connection shutdown".into()),
                 )
                 .await;
+                finish_all_images(
+                    &mut active_image,
+                    &mut queued_images,
+                    &completions,
+                    session_id,
+                    connection_id,
+                    Ok(SendOutcome::Cancelled),
+                )
+                .await;
                 let result = runtime
                     .close_stream(&connection)
                     .await
@@ -7212,6 +7454,106 @@ async fn run_send_worker(
                 break;
             }
         }
+    }
+}
+
+async fn wait_for_send_work(
+    jobs: &mut mpsc::Receiver<SendJob>,
+    bulk_active: bool,
+    next_bulk_send_at: tokio::time::Instant,
+) -> SendWorkerWake {
+    if !bulk_active {
+        return jobs
+            .recv()
+            .await
+            .map_or(SendWorkerWake::QueueClosed, SendWorkerWake::Job);
+    }
+    match jobs.try_recv() {
+        Ok(job) => return SendWorkerWake::Job(job),
+        Err(mpsc::error::TryRecvError::Disconnected) => return SendWorkerWake::QueueClosed,
+        Err(mpsc::error::TryRecvError::Empty) => {}
+    }
+    if tokio::time::Instant::now() >= next_bulk_send_at {
+        return SendWorkerWake::BulkReady;
+    }
+    tokio::select! {
+        biased;
+        job = jobs.recv() => job.map_or(SendWorkerWake::QueueClosed, SendWorkerWake::Job),
+        _ = tokio::time::sleep_until(next_bulk_send_at) => SendWorkerWake::BulkReady,
+    }
+}
+
+async fn send_active_image_burst(
+    runtime: &SamRuntime,
+    connection: &LiveConnection,
+    active_image: &mut Option<OutgoingImageSend>,
+) -> Result<ImageBurstOutcome, String> {
+    let image = active_image.as_mut().expect("active image was checked");
+    for _ in 0..IMAGE_SEND_BURST_FRAMES {
+        let frame = match image.next_frame() {
+            ImageSendStep::Frame(frame) => frame,
+            ImageSendStep::Completed => return Ok(ImageBurstOutcome::Completed),
+            ImageSendStep::Cancelled => return Ok(ImageBurstOutcome::Cancelled),
+        };
+        runtime
+            .send_frame(connection, &frame)
+            .await
+            .map_err(|error| error.to_string())?;
+        if image.frames.is_empty() {
+            return Ok(ImageBurstOutcome::Completed);
+        }
+    }
+    Ok(ImageBurstOutcome::Continue)
+}
+
+async fn finish_active_image(
+    active_image: &mut Option<OutgoingImageSend>,
+    completions: &mpsc::Sender<Completion>,
+    session_id: SessionId,
+    connection_id: ConnectionId,
+    result: Result<SendOutcome, String>,
+) {
+    let Some(image) = active_image.take() else {
+        return;
+    };
+    let _ = completions
+        .send(Completion::SendFinished {
+            session_id,
+            connection_id,
+            completion: image.completion,
+            operation: image.operation,
+            result,
+        })
+        .await;
+}
+
+async fn finish_all_images(
+    active_image: &mut Option<OutgoingImageSend>,
+    queued_images: &mut VecDeque<OutgoingImageSend>,
+    completions: &mpsc::Sender<Completion>,
+    session_id: SessionId,
+    connection_id: ConnectionId,
+    result: Result<SendOutcome, String>,
+) {
+    let mut images = VecDeque::new();
+    if let Some(image) = active_image.take() {
+        images.push_back(image);
+    }
+    images.append(queued_images);
+    while let Some(image) = images.pop_front() {
+        let image_result = match &result {
+            Ok(outcome) => Ok(*outcome),
+            Err(reason) => Err(reason.clone()),
+        };
+        let _ = completions
+            .send(Completion::SendFinished {
+                session_id,
+                connection_id,
+                completion: image.completion,
+                operation: image.operation,
+                result: image_result,
+            })
+            .await;
     }
 }
 
@@ -7270,24 +7612,6 @@ async fn send_sequence(
             .map_err(|error| error.to_string())?;
     }
     for frame in frames {
-        runtime
-            .send_frame(connection, &frame)
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-async fn send_cancellable_sequence(
-    runtime: &SamRuntime,
-    connection: &LiveConnection,
-    frames: Vec<Frame>,
-    cancel: &std::sync::atomic::AtomicBool,
-) -> Result<(), String> {
-    for frame in frames {
-        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-            return Ok(());
-        }
         runtime
             .send_frame(connection, &frame)
             .await
@@ -7364,7 +7688,7 @@ enum Completion {
         connection_id: ConnectionId,
         completion: SendCompletion,
         operation: &'static str,
-        result: Result<(), String>,
+        result: Result<SendOutcome, String>,
     },
     FileProgress {
         session_id: SessionId,
@@ -7409,12 +7733,21 @@ enum Completion {
     },
 }
 
+#[cfg(test)]
 fn build_group_bootstrap_plan(
     group: &GroupRecord,
     default_tunnels: TunnelSettings,
 ) -> Result<GroupBootstrapPlan, DriverError> {
+    build_group_bootstrap_plan_with_prefix(group, default_tunnels, DEFAULT_SAM_SESSION_PREFIX)
+}
+
+fn build_group_bootstrap_plan_with_prefix(
+    group: &GroupRecord,
+    default_tunnels: TunnelSettings,
+    sam_session_prefix: &str,
+) -> Result<GroupBootstrapPlan, DriverError> {
     let suffix = group_sam_session_suffix(group, now_epoch_millis());
-    let session_id = format!("termcomm_group_{suffix}");
+    let session_id = format!("{sam_session_prefix}_group_{suffix}");
     let tunnels = TunnelOptions::new(default_tunnels.length, default_tunnels.quantity)
         .map_err(|error| DriverError::GroupBootstrap(error.to_string()))?;
     let (sam_config, expected_b32) = match &group.identity {
@@ -7508,14 +7841,23 @@ fn initialize_group_record(
     Ok((group, initialized))
 }
 
+#[cfg(test)]
 fn build_contact_bootstrap_plan(
     contact: &ContactRecord,
     endpoint: SamEndpoint,
 ) -> Result<ContactBootstrapPlan, DriverError> {
+    build_contact_bootstrap_plan_with_prefix(contact, endpoint, DEFAULT_SAM_SESSION_PREFIX)
+}
+
+fn build_contact_bootstrap_plan_with_prefix(
+    contact: &ContactRecord,
+    endpoint: SamEndpoint,
+    sam_session_prefix: &str,
+) -> Result<ContactBootstrapPlan, DriverError> {
     let tunnels = TunnelOptions::new(contact.tunnels.length, contact.tunnels.quantity)
         .map_err(|error| DriverError::ContactBootstrap(error.to_string()))?;
     let suffix = contact_sam_session_suffix(&contact.display_name, now_epoch_millis());
-    let session_id = format!("termcomm_chat_{suffix}");
+    let session_id = format!("{sam_session_prefix}_chat_{suffix}");
     let (sam_config, expected_b32, persist_identity) = match &contact.identity {
         Some(identity) => (
             SamSessionConfig::persistent(
@@ -7575,7 +7917,7 @@ fn build_contact_bootstrap_plan(
             } else {
                 let config = DeaddropConfig::new(
                     endpoint,
-                    format!("termcomm_drop_{suffix}"),
+                    format!("{sam_session_prefix}_drop_{suffix}"),
                     contact.deaddrop_servers.clone(),
                 )
                 .map_err(|error| DriverError::ContactBootstrap(error.to_string()))?;
@@ -7634,6 +7976,7 @@ async fn prepare_transient(
     runtime: SamRuntime,
     transient_id: &TransientId,
     default_tunnels: TunnelSettings,
+    sam_session_prefix: &str,
 ) -> Result<PreparedTransient, String> {
     let session_name = transient_id
         .as_str()
@@ -7648,7 +7991,10 @@ async fn prepare_transient(
         .take(64)
         .collect::<String>();
     let config = SamSessionConfig::transient(
-        format!("termcomm_transient_{session_name}_{}", now_epoch_millis()),
+        format!(
+            "{sam_session_prefix}_transient_{session_name}_{}",
+            now_epoch_millis()
+        ),
         TunnelOptions::new(default_tunnels.length, default_tunnels.quantity)
             .map_err(|error| error.to_string())?,
     )
@@ -8361,6 +8707,123 @@ mod tests {
     const ALICE_DESTINATION: &str = "YWJj";
     const BOB_DESTINATION: &str = "ZGVm";
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn driver_config_validates_frontend_sam_session_prefixes() {
+        let config = ApplicationDriverConfig::new("deskcomm").expect("valid prefix");
+        assert_eq!(config.sam_session_prefix(), "deskcomm");
+        assert!(ApplicationDriverConfig::new("deskcomm client").is_err());
+        assert!(ApplicationDriverConfig::new("").is_err());
+    }
+
+    #[test]
+    fn contact_bootstrap_uses_the_configured_frontend_prefix() {
+        let contact = ContactRecord::new(
+            ContactId::new("deskcomm-test").expect("contact id"),
+            "DeskComm Test",
+        )
+        .expect("contact");
+        let plan =
+            build_contact_bootstrap_plan_with_prefix(&contact, SamEndpoint::default(), "deskcomm")
+                .expect("bootstrap plan");
+
+        assert!(plan.sam_config.session_id().starts_with("deskcomm_chat_"));
+    }
+
+    #[test]
+    fn cooperative_image_sender_stops_before_the_next_frame_when_cancelled() {
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let key = OriginalImageKey {
+            session_id: SessionId::new(71),
+            media_id: 7001,
+            sender_b32: String::new(),
+        };
+        let mut image = OutgoingImageSend::new(
+            vec![
+                Frame::new(MessageType::J, 81, b"header".to_vec()),
+                Frame::new(MessageType::G, 81, b"chunk".to_vec()),
+                Frame::new(MessageType::Z, 81, Vec::new()),
+            ],
+            Some(cancel.clone()),
+            SendCompletion::OriginalImage {
+                key,
+                cancel: cancel.clone(),
+            },
+            "test original image",
+        );
+
+        assert!(matches!(
+            image.next_frame(),
+            ImageSendStep::Frame(Frame {
+                message_type: MessageType::J,
+                ..
+            })
+        ));
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(image.next_frame(), ImageSendStep::Cancelled));
+        assert_eq!(image.frames.len(), 2);
+    }
+
+    #[test]
+    fn image_sequences_keep_fifo_queue_order() {
+        let first = OutgoingImageSend::new(
+            vec![Frame::new(MessageType::J, 1, Vec::new())],
+            None,
+            SendCompletion::None,
+            "first image",
+        );
+        let second = OutgoingImageSend::new(
+            vec![Frame::new(MessageType::J, 2, Vec::new())],
+            None,
+            SendCompletion::None,
+            "second image",
+        );
+        let mut active = Some(first);
+        let mut queued = VecDeque::from([second]);
+
+        assert_eq!(
+            active
+                .as_ref()
+                .and_then(|image| image.frames.front())
+                .map(|frame| frame.message_id),
+            Some(1)
+        );
+        active = queued.pop_front();
+        assert_eq!(
+            active
+                .as_ref()
+                .and_then(|image| image.frames.front())
+                .map(|frame| frame.message_id),
+            Some(2)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_control_work_preempts_a_future_bulk_send_slot() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send(SendJob::Sequence {
+            destination_prelude: None,
+            frames: vec![Frame::new(MessageType::D, 91, Vec::new())],
+            completion: SendCompletion::None,
+            operation: "test priority control",
+        })
+        .await
+        .expect("queue control frame");
+
+        let wake = wait_for_send_work(
+            &mut rx,
+            true,
+            tokio::time::Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+        assert!(matches!(
+            wake,
+            SendWorkerWake::Job(SendJob::Sequence {
+                operation: "test priority control",
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn accepted_file_sender_uses_the_negotiated_transfer_id() {

@@ -1,0 +1,3543 @@
+import { Button, CheckBox, LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
+import { Icon, IconDisplay, IconSet } from "@lucide";
+
+component CommandButton inherits Button {
+    height: 28px;
+}
+
+component CompactButton inherits Button {
+    height: 26px;
+}
+
+component ContactModeSelector inherits Rectangle {
+    in-out property <bool> transient-mode;
+    in property <bool> enabled: true;
+
+    width: 176px;
+    height: 28px;
+    background: #0d1316;
+    border-width: 1px;
+    border-color: #3c4a50;
+    border-radius: 4px;
+    clip: true;
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            horizontal-stretch: 1;
+            background: !root.enabled ? transparent
+                : !root.transient-mode ? #174752
+                : persistent-touch.has-hover ? #132d34 : transparent;
+
+            Text {
+                text: "Persistent";
+                color: !root.enabled ? #59666b
+                    : !root.transient-mode ? #f4fafb : #aebbc0;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            persistent-touch := TouchArea {
+                enabled: root.enabled;
+                clicked => { root.transient-mode = false; }
+            }
+        }
+
+        Rectangle {
+            width: 1px;
+            background: #3c4a50;
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            background: !root.enabled ? transparent
+                : root.transient-mode ? #174752
+                : transient-touch.has-hover ? #132d34 : transparent;
+
+            Text {
+                text: "Transient";
+                color: !root.enabled ? #59666b
+                    : root.transient-mode ? #f4fafb : #aebbc0;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            transient-touch := TouchArea {
+                enabled: root.enabled;
+                clicked => { root.transient-mode = true; }
+            }
+        }
+    }
+}
+
+export struct CatalogItem {
+    title: string,
+    detail: string,
+    state: string,
+    active: bool,
+    transient: bool,
+    peer-pinned: bool,
+    owner: bool,
+}
+
+export struct SessionItem {
+    title: string,
+    session-kind: string,
+    detail: string,
+    state: string,
+    local-b32: string,
+    local-b32-display: string,
+    peer-b32: string,
+    peer-b32-display: string,
+    connect-address: string,
+    trust: string,
+    tofu-state: int,
+    is-contact: bool,
+    is-one-to-one: bool,
+    peer-pinned: bool,
+    can-connect: bool,
+    can-accept: bool,
+    can-decline: bool,
+    can-disconnect: bool,
+    can-send: bool,
+    can-send-image: bool,
+    can-send-file: bool,
+    can-enter-offline: bool,
+    can-leave-offline: bool,
+    offline: bool,
+    offline-activity: string,
+    offline-activity-tone: int,
+    can-close: bool,
+    can-lock: bool,
+    can-rendezvous: bool,
+    rendezvous-authenticated: bool,
+    history-enabled: bool,
+    has-details: bool,
+    opening: bool,
+}
+
+export struct MessageItem {
+    text: string,
+    is-reply: bool,
+    reply-author: string,
+    reply-quote: string,
+    reply-body: string,
+    image: image,
+    image-detail: string,
+    image-width: float,
+    image-height: float,
+    bubble-width: float,
+    is-image: bool,
+    author: string,
+    timestamp: string,
+    delivery: string,
+    mine: bool,
+    offline: bool,
+    stored: bool,
+    original-action: string,
+    original-status: string,
+    original-progress: float,
+    original-busy: bool,
+    is-file: bool,
+    file-total: string,
+    file-progress: float,
+    file-status: string,
+    file-path: string,
+    file-can-accept: bool,
+    file-can-decline: bool,
+    file-can-cancel: bool,
+}
+
+export struct GroupMemberItem {
+    name: string,
+    b32: string,
+    role: string,
+    state: string,
+    removable: bool,
+}
+
+export struct DeaddropServerItem {
+    address: string,
+    statistics: string,
+    timing: string,
+    active: bool,
+    removable: bool,
+}
+
+export struct LogItem {
+    timestamp: string,
+    category: string,
+    message: string,
+    tone: int,
+}
+
+component RootTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback activated();
+
+    height: 32px;
+    min-width: 108px;
+    background: selected ? #174752 : transparent;
+    border-width: 1px;
+    border-color: selected ? #47bfd1 : #3c4a50;
+    border-radius: 4px;
+
+    Text {
+        text: root.label;
+        color: root.selected ? #f4fafb : #aebbc0;
+        font-size: 14px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        clicked => {
+            if root.enabled {
+                root.activated();
+            }
+        }
+    }
+}
+
+component CatalogRow inherits Rectangle {
+    in property <CatalogItem> entry;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback activated();
+
+    height: root.entry.detail == "" ? 38px : 56px;
+    background: selected ? #174752 : transparent;
+
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
+        padding-bottom: 7px;
+        spacing: 2px;
+
+        HorizontalLayout {
+            Text {
+                text: root.entry.title;
+                color: #e5ecee;
+                font-size: 14px;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.entry.state;
+                color: root.entry.state == "Open" ? #70c990 : #87959a;
+                font-size: 11px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+        if root.entry.detail != "": Text {
+            text: root.entry.detail;
+            color: #87959a;
+            font-size: 11px;
+            overflow: elide;
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: #263238;
+    }
+    TouchArea {
+        clicked => {
+            if root.enabled {
+                root.activated();
+            }
+        }
+    }
+}
+
+component GroupMemberRow inherits Rectangle {
+    in property <GroupMemberItem> entry;
+    in property <bool> selected;
+    callback activated();
+
+    height: 54px;
+    background: selected ? #174752 : transparent;
+
+    VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 7px;
+        padding-bottom: 6px;
+        spacing: 2px;
+        HorizontalLayout {
+            Text {
+                text: root.entry.name;
+                color: #e5ecee;
+                font-size: 13px;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.entry.role + "  " + root.entry.state;
+                color: root.entry.state == "Online" ? #70c990 : #87959a;
+                font-size: 10px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: root.entry.b32;
+            color: #87959a;
+            font-size: 10px;
+            overflow: elide;
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: #263238;
+    }
+    TouchArea { clicked => { root.activated(); } }
+}
+
+component DeaddropServerRow inherits Rectangle {
+    in property <DeaddropServerItem> entry;
+    in property <bool> selected;
+    callback activated();
+
+    height: 62px;
+    background: selected ? #174752 : transparent;
+
+    VerticalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 6px;
+        padding-bottom: 5px;
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: root.entry.active ? "A" : "R";
+                color: root.entry.active ? #70c990 : #87959a;
+                font-size: 10px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.entry.address;
+                color: #d7e2e5;
+                font-size: 10px;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: root.entry.statistics;
+            color: #87959a;
+            font-size: 10px;
+            overflow: elide;
+        }
+        Text {
+            text: root.entry.timing;
+            color: #6f8086;
+            font-size: 10px;
+            overflow: elide;
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: #263238;
+    }
+    TouchArea { clicked => { root.activated(); } }
+}
+
+component SessionTab inherits Rectangle {
+    in property <SessionItem> entry;
+    in property <bool> selected;
+    callback activated();
+
+    width: 160px;
+    height: 32px;
+    background: selected
+        ? (session-tab-touch.has-hover ? #1c5662 : #174752)
+        : (session-tab-touch.has-hover ? #1b343b : transparent);
+    border-width: 1px;
+    border-color: selected ? #47bfd1 : #3c4a50;
+    border-radius: 4px;
+
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 6px;
+        Text {
+            text: root.entry.title;
+            color: #e5ecee;
+            font-size: 12px;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.entry.state;
+            color: root.entry.state == "Connected" || root.entry.state == "Active"
+                ? #70c990
+                : root.entry.state == "Opening" || root.entry.state == "Incoming" || root.entry.state == "Connecting" || root.entry.state == "Securing"
+                    ? #47bfd1
+                    : #87959a;
+            font-size: 10px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+    session-tab-touch := TouchArea {
+        clicked => { root.activated(); }
+    }
+}
+
+component SessionKindMarker inherits Rectangle {
+    in property <string> label;
+
+    width: 20px;
+    height: 20px;
+    background: transparent;
+    border-width: 1px;
+    border-color: #536269;
+    border-radius: 3px;
+
+    Text {
+        text: root.label;
+        color: #b9c5c8;
+        font-size: 10px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component StatusMarker inherits Rectangle {
+    in property <string> label;
+    in property <int> tone;
+    in property <bool> hollow: false;
+    property <color> marker-color: root.tone == 2 ? #70c990
+        : root.tone == 3 ? #d6a85f
+        : root.tone == 4 ? #e17878
+        : root.tone == 1 ? #47bfd1
+        : #7f8e93;
+
+    height: 20px;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 5px;
+        alignment: start;
+        VerticalLayout {
+            width: 9px;
+            alignment: center;
+            Rectangle {
+                width: 9px;
+                height: 9px;
+                border-radius: 5px;
+                background: root.hollow ? transparent : root.marker-color;
+                border-width: 1px;
+                border-color: root.marker-color;
+            }
+        }
+        Text {
+            text: root.label;
+            color: root.marker-color;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component AddressCopyControl inherits Rectangle {
+    in property <string> prefix;
+    in property <string> address;
+    in property <string> display-address: root.address;
+    in property <color> accent;
+    in property <bool> compact: false;
+    in property <bool> full-address: false;
+    callback activated();
+
+    width: 150px;
+    height: 20px;
+    background: address-touch.has-hover && root.address != "" ? #1b343b
+        : root.compact ? #121a1e
+        : transparent;
+    border-width: root.compact || (address-touch.has-hover && root.address != "") ? 1px : 0px;
+    border-color: #3d6972;
+    border-radius: 3px;
+
+    if !root.full-address: Text {
+        x: 5px;
+        width: parent.width - 10px;
+        height: parent.height;
+        text: root.prefix == "" ? root.display-address : root.prefix + " " + root.display-address;
+        color: root.address == "" ? #6f8086 : root.accent;
+        font-size: 10px;
+        overflow: elide;
+        horizontal-alignment: root.compact ? center : left;
+        vertical-alignment: center;
+    }
+    if root.full-address: Text {
+        x: 5px;
+        width: parent.width - 10px;
+        height: parent.height;
+        text: root.display-address;
+        color: root.address == "" ? #6f8086 : root.accent;
+        font-size: 10px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    address-touch := TouchArea {
+        mouse-cursor: root.address == "" ? default : copy;
+        clicked => {
+            if root.address != "" {
+                root.activated();
+            }
+        }
+    }
+}
+
+component BubbleIconAction inherits Rectangle {
+    in property <Icon> icon;
+    in property <string> description;
+    in property <bool> enabled: true;
+    callback activated();
+
+    width: 18px;
+    height: 18px;
+    background: transparent;
+
+    IconDisplay {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        icon: root.icon;
+        size: 13px;
+        stroke: !root.enabled ? #59666b
+            : action-touch.has-hover ? #edf3f4 : #87959a;
+        stroke-width: 1.7;
+    }
+    action-touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activated(); }
+    }
+    Tooltip {
+        Text {
+            text: root.description;
+            color: #edf3f4;
+            font-size: 11px;
+        }
+    }
+}
+
+component HistoryIndicator inherits Rectangle {
+    in property <string> description;
+    in property <color> accent: #87959a;
+
+    width: 16px;
+    height: 18px;
+    background: transparent;
+
+    IconDisplay {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        icon: IconSet.History;
+        size: 13px;
+        stroke: root.accent;
+        stroke-width: 1.7;
+    }
+    Tooltip {
+        Text {
+            text: root.description;
+            color: #edf3f4;
+            font-size: 11px;
+        }
+    }
+}
+
+component MessageBubble inherits Rectangle {
+    in property <MessageItem> entry;
+    in property <length> available-width;
+    in property <bool> actions-enabled: true;
+    callback request-original();
+    callback cancel-original();
+    callback accept-file();
+    callback decline-file();
+    callback cancel-file();
+    callback copy-text();
+    callback reply-text();
+    in property <bool> reply-enabled: false;
+
+    width: min(
+        max(root.entry.bubble-width * 1px,
+            !root.entry.is-image && !root.entry.is-file ? 126px : 0px),
+        root.available-width * 0.90
+    );
+    height: max(58px, bubble-content.preferred-height + 18px);
+    background: root.entry.mine ? #15372d : #14343b;
+    border-width: 1px;
+    border-color: root.entry.mine ? #3f8c70 : #367f8c;
+    border-radius: 6px;
+
+    bubble-content := VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 4px;
+        Text {
+            text: root.entry.author;
+            color: root.entry.mine ? #70c990 : #63c8d8;
+            font-size: 11px;
+        }
+        if !root.entry.is-image && !root.entry.is-file && !root.entry.is-reply: Text {
+            text: root.entry.text;
+            color: #edf3f4;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+        if !root.entry.is-image && !root.entry.is-file && root.entry.is-reply: Rectangle {
+            height: reply-quote-content.preferred-height + 12px;
+            background: #12161a;
+            border-width: 1px;
+            border-color: #52525c;
+            border-radius: 4px;
+
+            reply-quote-content := VerticalLayout {
+                padding-left: 7px;
+                padding-right: 7px;
+                padding-top: 5px;
+                padding-bottom: 5px;
+                spacing: 2px;
+                Text {
+                    text: "Reply to " + root.entry.reply-author;
+                    color: #9b9ba4;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.entry.reply-quote;
+                    color: #b2b2ba;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        if !root.entry.is-image && !root.entry.is-file && root.entry.is-reply: Text {
+            text: root.entry.reply-body;
+            color: #edf3f4;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+        if root.entry.is-file: Text {
+            text: root.entry.text;
+            color: #edf3f4;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+        if root.entry.is-file: Text {
+            text: root.entry.file-total;
+            color: #87959a;
+            font-size: 10px;
+        }
+        if root.entry.is-file: Rectangle {
+            height: 5px;
+            background: #26343a;
+            border-radius: 2px;
+            Rectangle {
+                width: parent.width * max(0.0, min(1.0, root.entry.file-progress));
+                height: parent.height;
+                background: #47bfd1;
+                border-radius: 2px;
+            }
+        }
+        if root.entry.is-file: Text {
+            text: root.entry.file-status;
+            color: #87959a;
+            font-size: 10px;
+            overflow: elide;
+        }
+        if root.entry.is-file && root.entry.file-path != "": Text {
+            text: root.entry.file-path;
+            color: #6f8086;
+            font-size: 10px;
+            overflow: elide;
+        }
+        if root.entry.is-file && (root.entry.file-can-accept
+            || root.entry.file-can-decline || root.entry.file-can-cancel): HorizontalLayout {
+            height: 24px;
+            spacing: 6px;
+            if root.entry.file-can-accept: CompactButton {
+                height: 24px;
+                text: "Accept";
+                enabled: root.actions-enabled;
+                clicked => { root.accept-file(); }
+            }
+            if root.entry.file-can-decline: CompactButton {
+                height: 24px;
+                text: "Decline";
+                enabled: root.actions-enabled;
+                clicked => { root.decline-file(); }
+            }
+            if root.entry.file-can-cancel: CompactButton {
+                height: 24px;
+                text: "Cancel";
+                enabled: root.actions-enabled;
+                clicked => { root.cancel-file(); }
+            }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+        }
+        if root.entry.is-image: Rectangle {
+            property <length> rendered-width: min(root.entry.image-width * 1px, self.width);
+            property <length> rendered-height: root.entry.image-width > 0
+                ? rendered-width * root.entry.image-height / root.entry.image-width
+                : 0px;
+            height: rendered-height;
+            background: transparent;
+
+            Image {
+                x: (parent.width - parent.rendered-width) / 2;
+                width: parent.rendered-width;
+                height: parent.rendered-height;
+                source: root.entry.image;
+                image-fit: contain;
+            }
+        }
+        if root.entry.is-image: Text {
+            text: root.entry.text;
+            color: #edf3f4;
+            font-size: 12px;
+            overflow: elide;
+        }
+        if root.entry.is-image && root.entry.image-detail != "": Text {
+            text: root.entry.image-detail;
+            color: #87959a;
+            font-size: 10px;
+            overflow: elide;
+        }
+        HorizontalLayout {
+            height: 18px;
+            spacing: 6px;
+            if !root.entry.is-image && !root.entry.is-file: BubbleIconAction {
+                icon: IconSet.Copy;
+                description: "Copy message";
+                activated => { root.copy-text(); }
+            }
+            if !root.entry.is-image && !root.entry.is-file: BubbleIconAction {
+                icon: IconSet.Reply;
+                description: "Reply to message";
+                enabled: root.reply-enabled;
+                activated => { root.reply-text(); }
+            }
+            if root.entry.is-image && root.entry.original-action != "": BubbleIconAction {
+                icon: root.entry.original-action == "Open Original" ? IconSet.Maximize2
+                    : root.entry.original-action == "Retry Original" ? IconSet.RotateCcw
+                    : IconSet.Download;
+                description: root.entry.original-action;
+                enabled: root.actions-enabled;
+                activated => { root.request-original(); }
+            }
+            if root.entry.is-image && !root.entry.original-busy
+                && root.entry.original-status != "": Text {
+                text: root.entry.original-status;
+                color: #87959a;
+                font-size: 10px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if root.entry.is-image && root.entry.original-busy: Rectangle {
+                width: 90px;
+                height: 5px;
+                background: #26343a;
+                border-radius: 2px;
+                Rectangle {
+                    width: parent.width * max(0.0, min(1.0, root.entry.original-progress));
+                    height: parent.height;
+                    background: #47bfd1;
+                    border-radius: 2px;
+                }
+                Tooltip {
+                    Text {
+                        text: root.entry.original-status;
+                        color: #edf3f4;
+                        font-size: 11px;
+                    }
+                }
+            }
+            if root.entry.is-image && root.entry.original-busy: BubbleIconAction {
+                icon: IconSet.X;
+                description: "Cancel original download";
+                enabled: root.actions-enabled;
+                activated => { root.cancel-original(); }
+            }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+            if root.entry.stored: HistoryIndicator {
+                description: "Stored in encrypted history";
+            }
+            Text {
+                text: root.entry.timestamp
+                    + (root.entry.offline ? "  OFFLINE" : "")
+                    + (root.entry.delivery != "" ? "  " + root.entry.delivery : "");
+                color: #87959a;
+                font-size: 10px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component MessageRow inherits Rectangle {
+    in property <MessageItem> entry;
+    in property <bool> actions-enabled: true;
+    callback request-original();
+    callback cancel-original();
+    callback accept-file();
+    callback decline-file();
+    callback cancel-file();
+    callback copy-text();
+    callback reply-text();
+    in property <bool> reply-enabled: false;
+
+    height: message-bubble.height + 6px;
+    background: transparent;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        if !root.entry.mine: Rectangle { horizontal-stretch: 1; background: transparent; }
+        message-bubble := MessageBubble {
+            entry: root.entry;
+            available-width: root.width;
+            actions-enabled: root.actions-enabled;
+            reply-enabled: root.reply-enabled;
+            request-original => { root.request-original(); }
+            cancel-original => { root.cancel-original(); }
+            accept-file => { root.accept-file(); }
+            decline-file => { root.decline-file(); }
+            cancel-file => { root.cancel-file(); }
+            copy-text => { root.copy-text(); }
+            reply-text => { root.reply-text(); }
+        }
+        if root.entry.mine: Rectangle { horizontal-stretch: 1; background: transparent; }
+    }
+}
+
+component LogRow inherits Rectangle {
+    in property <LogItem> entry;
+
+    height: max(24px, log-message.preferred-height + 8px);
+    background: transparent;
+
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 8px;
+        Text {
+            width: 78px;
+            text: root.entry.timestamp;
+            color: #6f8086;
+            font-size: 10px;
+        }
+        Text {
+            width: 62px;
+            text: root.entry.category;
+            color: root.entry.tone == 2 ? #e47b7b
+                : root.entry.tone == 1 ? #d7b768 : #63c8d8;
+            font-size: 10px;
+            overflow: elide;
+        }
+        log-message := Text {
+            horizontal-stretch: 1;
+            text: root.entry.message;
+            color: root.entry.tone == 2 ? #e8a0a0 : #aebbc0;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "DeskComm-I2P";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 1280px;
+    min-height: 700px;
+    background: #101619;
+
+    in-out property <int> screen: 0;
+    in-out property <bool> busy: false;
+    in-out property <string> gate-error: "";
+    in-out property <string> password: "";
+    in-out property <string> confirm-password: "";
+    in property <string> vault-path: "";
+    in property <[CatalogItem]> contacts;
+    in property <[CatalogItem]> groups;
+    in property <[SessionItem]> sessions;
+    in property <[MessageItem]> messages;
+    in property <[LogItem]> session-logs;
+    in property <string> session-log-summary: "Session Logs (0)";
+    in property <bool> session-logs-empty: true;
+    in property <[GroupMemberItem]> group-members;
+    in property <[DeaddropServerItem]> contact-deaddrops;
+    in property <string> contacts-summary: "No contacts";
+    in property <string> groups-summary: "No groups";
+    in-out property <bool> settings-visible: false;
+    in-out property <bool> new-one-to-one-visible: false;
+    in-out property <bool> new-one-to-one-transient: false;
+    in-out property <bool> contact-details-visible: false;
+    in-out property <bool> group-invites-visible: false;
+    in-out property <bool> group-details-visible: false;
+    property <bool> context-inspector-visible: root.contact-details-visible
+        || root.group-details-visible || root.group-invites-visible;
+    property <bool> context-inspector-side-by-side: root.context-inspector-visible
+        && root.width >= 1000px;
+    property <length> context-inspector-width: max(0px, (root.width - 329px) * 0.35);
+    in property <string> sam-endpoint: "";
+    in property <string> tunnel-defaults: "";
+    in-out property <string> settings-sam-host: "";
+    in-out property <string> settings-sam-port: "";
+    in-out property <int> settings-tunnel-length: 2;
+    in-out property <int> settings-tunnel-quantity: 3;
+    in property <bool> settings-transport-editable: true;
+    in property <bool> settings-sam-liveness-enabled: false;
+    in property <bool> settings-sam-shutdown-on-failure: false;
+    in property <string> settings-sam-monitor-status: "Inactive";
+    in property <int> settings-sam-monitor-tone: 0;
+    in property <string> settings-sam-test-status: "Not run";
+    in property <int> settings-sam-test-tone: 0;
+    in property <bool> settings-sam-test-running: false;
+    in-out property <int> settings-data-action: 0;
+    in-out property <string> settings-data-path: "";
+    in-out property <string> settings-data-passphrase: "";
+    in-out property <string> settings-data-passphrase-confirm: "";
+    in-out property <bool> settings-data-option: true;
+    in-out property <bool> settings-data-confirmation-visible: false;
+    in-out property <string> settings-data-confirmation-text: "";
+    in property <string> runtime-status: "Not started";
+    in-out property <bool> operation-busy: false;
+    in-out property <string> operation-status: "";
+    in-out property <string> new-contact-name: "";
+    in-out property <string> new-transient-label: "";
+    in-out property <string> new-group-name: "";
+    in-out property <string> private-request-input: "";
+    in-out property <string> group-invite-input: "";
+    in-out property <string> generated-group-material-label: "";
+    in-out property <string> generated-group-material: "";
+    in-out property <string> contact-detail-name: "";
+    in-out property <string> contact-rename-input: "";
+    in-out property <string> contact-detail-local-b32: "";
+    in-out property <string> contact-detail-peer-b32: "";
+    in-out property <bool> contact-history-enabled: false;
+    in-out property <int> contact-tunnel-length: 2;
+    in-out property <int> contact-tunnel-quantity: 3;
+    in-out property <string> contact-deaddrop-summary: "No deaddrop servers";
+    in-out property <string> contact-deaddrop-input: "";
+    in-out property <int> selected-contact-deaddrop: -1;
+    in-out property <bool> selected-contact-deaddrop-removable: false;
+    in-out property <int> contact-confirmation: 0;
+    in-out property <bool> contact-export-visible: false;
+    in-out property <string> contact-export-path: "";
+    in-out property <string> contact-export-passphrase: "";
+    in-out property <string> contact-export-passphrase-confirm: "";
+    in-out property <bool> contact-export-history: true;
+    in-out property <string> group-detail-name: "";
+    in-out property <string> group-detail-role: "";
+    in-out property <string> group-detail-local-b32: "";
+    in-out property <string> group-detail-roster: "";
+    in-out property <bool> group-history-enabled: false;
+    in-out property <string> group-local-name-input: "";
+    in-out property <string> peer-address-input: "";
+    in-out property <string> message-input: "";
+    in-out property <bool> reply-visible: false;
+    in-out property <string> reply-author: "";
+    in-out property <string> reply-preview: "";
+    in-out property <bool> message-follow-bottom: true;
+    in-out property <bool> session-logs-visible: false;
+    in-out property <bool> connect-input-visible: false;
+    in-out property <bool> unlock-confirmation-visible: false;
+    in-out property <bool> lock-confirmation-visible: false;
+    in-out property <bool> rendezvous-visible: false;
+    in-out property <string> rendezvous-input: "";
+    in-out property <string> rendezvous-output-label: "";
+    in-out property <string> rendezvous-output: "";
+    in-out property <bool> original-viewer-visible: false;
+    in-out property <image> original-viewer-image;
+    in-out property <string> original-viewer-filename: "";
+    in-out property <string> original-viewer-detail: "";
+    in-out property <string> original-viewer-status: "";
+    in-out property <int> selected-section: 0;
+    in-out property <int> selected-contact: -1;
+    in-out property <int> selected-group: -1;
+    in-out property <int> selected-session: -1;
+    in-out property <bool> selected-contact-active: false;
+    in-out property <bool> selected-contact-pinned: false;
+    in-out property <bool> selected-contact-transient: false;
+    in-out property <bool> selected-group-active: false;
+    in-out property <bool> selected-group-owner: false;
+    in-out property <bool> group-owner-ready: false;
+    in-out property <bool> group-leave-pending: false;
+    in-out property <int> selected-group-member: -1;
+    in-out property <bool> selected-group-member-removable: false;
+    in-out property <int> group-confirmation: 0;
+
+    callback submit-gate(string, string);
+    callback create-contact(string);
+    callback open-transient(string);
+    callback open-contact(int);
+    callback select-contact(int);
+    callback rename-contact(int, string);
+    callback reset-contact(int);
+    callback delete-contact(int);
+    callback set-contact-history(int, bool);
+    callback clear-contact-history(int);
+    callback set-contact-tunnels(int, int, int);
+    callback reset-contact-tunnels(int);
+    callback add-contact-deaddrop(int, string);
+    callback remove-contact-deaddrop(int, int);
+    callback begin-contact-export(int);
+    callback choose-contact-export-path();
+    callback submit-contact-export(int, string, string, string, bool);
+    callback cancel-contact-export();
+    callback create-group(string);
+    callback open-group(int);
+    callback select-group(int);
+    callback set-group-history(int, bool);
+    callback clear-group-history(int);
+    callback set-group-local-name(int, string);
+    callback remove-group-member(int, int);
+    callback leave-group(int, bool);
+    callback dissolve-group(int);
+    callback delete-group(int);
+    callback generate-public-invite(int);
+    callback generate-private-request();
+    callback answer-private-request(int, string);
+    callback import-group-invite(string);
+    callback copy-group-material(string);
+    callback close-session(int);
+    callback select-session(int);
+    callback show-session-details(int);
+    callback connect-session(int, string);
+    callback accept-session(int);
+    callback decline-session(int);
+    callback disconnect-session(int);
+    callback enter-offline(int);
+    callback leave-offline(int);
+    callback lock-session(int);
+    callback toggle-rendezvous(int);
+    callback generate-rendezvous-request(int);
+    callback submit-rendezvous-input(int, string);
+    callback revoke-rendezvous(int);
+    callback copy-rendezvous-output(string);
+    callback unlock-contact(int);
+    callback send-text(int, string);
+    callback copy-text-message(int, int);
+    callback reply-text-message(int, int);
+    callback cancel-reply(int);
+    callback send-image(int);
+    callback send-file(int);
+    callback request-original-image(int, int);
+    callback cancel-original-image(int, int);
+    callback accept-file(int, int);
+    callback decline-file(int, int);
+    callback cancel-file(int, int);
+    callback close-original-viewer();
+    callback save-original-image();
+    callback copy-address(string, bool);
+    callback toggle-session-logs(int);
+    callback clear-session-logs(int);
+    callback copy-session-logs(int);
+    callback set-sam-host(string);
+    callback set-sam-port(string);
+    callback set-default-tunnels(int, int);
+    callback set-sam-liveness(bool);
+    callback set-sam-failure-action(bool);
+    callback test-sam();
+    callback begin-settings-data-action(int);
+    callback choose-settings-data-path(int);
+    callback submit-settings-data-action(int, string, string, string, bool);
+    callback confirm-settings-data-action(int, bool);
+    callback cancel-settings-data-action();
+
+    if root.screen != 2: Rectangle {
+        background: #101619;
+
+        VerticalLayout {
+            alignment: center;
+            padding-left: 24px;
+            padding-right: 24px;
+            spacing: 12px;
+
+            Image {
+                source: @image-url("../assets/commtools-i2p.png");
+                width: 112px;
+                height: 112px;
+                image-fit: contain;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "DeskComm-I2P";
+                color: #f2f7f8;
+                font-size: 27px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "CommTools desktop client";
+                color: #91a1a7;
+                font-size: 13px;
+                horizontal-alignment: center;
+            }
+            Rectangle { height: 12px; background: transparent; }
+            Text {
+                text: root.screen == 1 ? "Create encrypted vault" :
+                      root.screen == 3 ? "Closing encrypted vault" : "Unlock encrypted vault";
+                color: #d7e2e5;
+                font-size: 16px;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.vault-path;
+                color: #6f8086;
+                font-size: 11px;
+                horizontal-alignment: center;
+                overflow: elide;
+            }
+            gate-password := LineEdit {
+                width: 340px;
+                text <=> root.password;
+                input-type: InputType.password;
+                placeholder-text: "Passphrase";
+                enabled: !root.busy && root.screen != 3;
+                accepted(value) => {
+                    if root.screen == 0 {
+                        root.submit-gate(value, "");
+                    }
+                }
+            }
+            if root.screen == 1: LineEdit {
+                width: 340px;
+                text <=> root.confirm-password;
+                input-type: InputType.password;
+                placeholder-text: "Confirm passphrase";
+                enabled: !root.busy;
+                accepted(value) => { root.submit-gate(root.password, value); }
+            }
+            Button {
+                width: 340px;
+                text: root.busy ? "Please wait" : (root.screen == 1 ? "Create vault" : "Unlock");
+                enabled: !root.busy && root.screen != 3 && root.password != "";
+                clicked => { root.submit-gate(root.password, root.confirm-password); }
+            }
+            Text {
+                width: 440px;
+                min-height: 34px;
+                text: root.gate-error;
+                color: #e17878;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    if root.screen == 2: Rectangle {
+        background: #101619;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+
+            main-area := Rectangle {
+                min-width: 0px;
+                min-height: 0px;
+                preferred-width: 0px;
+                preferred-height: 0px;
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                background: transparent;
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                Rectangle {
+                    width: 300px;
+                    background: #151d21;
+                    border-width: root.context-inspector-side-by-side ? 0px : 1px;
+                    border-color: #344148;
+                    border-radius: 5px;
+
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            height: 32px;
+                            spacing: 6px;
+                            RootTab {
+                                label: "Contacts";
+                                enabled: !root.new-one-to-one-visible;
+                                selected: !root.settings-visible
+                                    && root.selected-section == 0;
+                                activated => {
+                                    if root.settings-visible {
+                                        root.cancel-settings-data-action();
+                                    }
+                                    if root.contact-export-visible {
+                                        root.cancel-contact-export();
+                                    }
+                                    root.settings-visible = false;
+                                    root.new-one-to-one-visible = false;
+                                    root.contact-details-visible = false;
+                                    root.contact-confirmation = 0;
+                                    root.contact-deaddrop-input = "";
+                                    root.group-invites-visible = false;
+                                    root.group-details-visible = false;
+                                    root.group-confirmation = 0;
+                                    root.private-request-input = "";
+                                    root.group-invite-input = "";
+                                    root.generated-group-material-label = "";
+                                    root.generated-group-material = "";
+                                    root.selected-section = 0;
+                                    root.connect-input-visible = false;
+                                    root.unlock-confirmation-visible = false;
+                                    root.lock-confirmation-visible = false;
+                                }
+                            }
+                            RootTab {
+                                label: "Groups";
+                                enabled: !root.new-one-to-one-visible;
+                                selected: !root.settings-visible
+                                    && !root.contact-details-visible
+                                    && root.selected-section == 1;
+                                activated => {
+                                    if root.settings-visible {
+                                        root.cancel-settings-data-action();
+                                    }
+                                    if root.contact-export-visible {
+                                        root.cancel-contact-export();
+                                    }
+                                    root.settings-visible = false;
+                                    root.new-one-to-one-visible = false;
+                                    root.contact-details-visible = false;
+                                    root.contact-confirmation = 0;
+                                    root.contact-deaddrop-input = "";
+                                    root.group-invites-visible = false;
+                                    root.group-details-visible = false;
+                                    root.group-confirmation = 0;
+                                    root.private-request-input = "";
+                                    root.group-invite-input = "";
+                                    root.generated-group-material-label = "";
+                                    root.generated-group-material = "";
+                                    root.selected-section = 1;
+                                    root.connect-input-visible = false;
+                                    root.unlock-confirmation-visible = false;
+                                    root.lock-confirmation-visible = false;
+                                }
+                            }
+                        }
+
+                        if root.selected-section == 0: VerticalLayout {
+                            vertical-stretch: 1;
+                            spacing: 6px;
+                            Text {
+                                text: root.contacts-summary;
+                                color: #87959a;
+                                font-size: 11px;
+                            }
+                            ListView {
+                                vertical-stretch: 1;
+                                for contact[index] in root.contacts: CatalogRow {
+                                    entry: contact;
+                                    selected: root.selected-contact == index;
+                                    enabled: !root.new-one-to-one-visible;
+                                    activated => {
+                                        root.selected-contact = index;
+                                        root.selected-contact-active = contact.active;
+                                        root.selected-contact-pinned = contact.peer-pinned;
+                                        root.selected-contact-transient = contact.transient;
+                                        root.unlock-confirmation-visible = false;
+                                        root.contact-confirmation = 0;
+                                        root.selected-contact-deaddrop = -1;
+                                        root.select-contact(index);
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.selected-section == 1: VerticalLayout {
+                            vertical-stretch: 1;
+                            spacing: 6px;
+                            Text {
+                                text: root.groups-summary;
+                                color: #87959a;
+                                font-size: 11px;
+                            }
+                            ListView {
+                                vertical-stretch: 1;
+                                for group[index] in root.groups: CatalogRow {
+                                    entry: group;
+                                    selected: root.selected-group == index;
+                                    activated => {
+                                        root.selected-group = index;
+                                        root.selected-group-active = group.active;
+                                        root.selected-group-owner = group.owner;
+                                        root.private-request-input = "";
+                                        root.group-invite-input = "";
+                                        root.generated-group-material-label = "";
+                                        root.generated-group-material = "";
+                                        root.group-confirmation = 0;
+                                        root.selected-group-member = -1;
+                                        root.selected-group-member-removable = false;
+                                        root.select-group(index);
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #344148; }
+
+                        if root.selected-section == 0: VerticalLayout {
+                            height: root.new-one-to-one-visible ? 180px
+                                : root.unlock-confirmation-visible ? 108px : 70px;
+                            spacing: 6px;
+                            HorizontalLayout {
+                                height: 32px;
+                                spacing: 6px;
+                                CommandButton {
+                                    text: root.new-one-to-one-visible ? "Cancel" : "New";
+                                    enabled: !root.operation-busy && !root.unlock-confirmation-visible;
+                                    clicked => {
+                                        if !root.new-one-to-one-visible {
+                                            root.settings-visible = false;
+                                            root.contact-details-visible = false;
+                                            root.group-invites-visible = false;
+                                            root.group-details-visible = false;
+                                            root.contact-confirmation = 0;
+                                            root.group-confirmation = 0;
+                                            root.contact-deaddrop-input = "";
+                                            root.private-request-input = "";
+                                            root.group-invite-input = "";
+                                            root.generated-group-material-label = "";
+                                            root.generated-group-material = "";
+                                            root.connect-input-visible = false;
+                                            root.lock-confirmation-visible = false;
+                                        }
+                                        root.new-one-to-one-visible = !root.new-one-to-one-visible;
+                                        root.new-one-to-one-transient = false;
+                                        root.new-contact-name = "";
+                                        root.new-transient-label = "";
+                                        root.contact-confirmation = 0;
+                                    }
+                                }
+                                CommandButton {
+                                    text: "Open";
+                                    enabled: !root.operation-busy
+                                        && !root.new-one-to-one-visible
+                                        && !root.unlock-confirmation-visible
+                                        && root.selected-contact >= 0;
+                                    clicked => {
+                                        root.settings-visible = false;
+                                        root.new-one-to-one-visible = false;
+                                        root.open-contact(root.selected-contact);
+                                    }
+                                }
+                            }
+                            if root.new-one-to-one-visible: HorizontalLayout {
+                                height: 32px;
+                                ContactModeSelector {
+                                    transient-mode <=> root.new-one-to-one-transient;
+                                    enabled: !root.operation-busy;
+                                }
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
+                            }
+                            if root.new-one-to-one-visible && !root.new-one-to-one-transient: LineEdit {
+                                height: 32px;
+                                text <=> root.new-contact-name;
+                                placeholder-text: "Contact name";
+                                enabled: !root.operation-busy;
+                                accepted(value) => { root.create-contact(value); }
+                            }
+                            if root.new-one-to-one-visible && root.new-one-to-one-transient: LineEdit {
+                                height: 32px;
+                                text <=> root.new-transient-label;
+                                placeholder-text: "Local label (optional)";
+                                enabled: !root.operation-busy;
+                                accepted(value) => { root.open-transient(value); }
+                            }
+                            if root.new-one-to-one-visible: CommandButton {
+                                text: "Create";
+                                enabled: !root.operation-busy
+                                    && (root.new-one-to-one-transient || root.new-contact-name != "");
+                                clicked => {
+                                    if root.new-one-to-one-transient {
+                                        root.open-transient(root.new-transient-label);
+                                    } else {
+                                        root.create-contact(root.new-contact-name);
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                height: 32px;
+                                spacing: 6px;
+                                CommandButton {
+                                    text: "Details";
+                                    enabled: !root.operation-busy
+                                        && !root.new-one-to-one-visible
+                                        && !root.selected-contact-transient
+                                        && root.selected-contact >= 0;
+                                    clicked => {
+                                        root.select-contact(root.selected-contact);
+                                        root.settings-visible = false;
+                                        root.new-one-to-one-visible = false;
+                                        root.group-invites-visible = false;
+                                        root.group-details-visible = false;
+                                        root.contact-details-visible = true;
+                                        root.contact-confirmation = 0;
+                                        root.selected-contact-deaddrop = -1;
+                                        root.contact-deaddrop-input = "";
+                                        root.connect-input-visible = false;
+                                        root.lock-confirmation-visible = false;
+                                    }
+                                }
+                                CommandButton {
+                                    text: "Unlock contact";
+                                    enabled: !root.operation-busy
+                                        && !root.new-one-to-one-visible
+                                        && !root.selected-contact-transient
+                                        && root.selected-contact >= 0
+                                        && root.selected-contact-pinned
+                                        && !root.selected-contact-active;
+                                    clicked => {
+                                        root.new-one-to-one-visible = false;
+                                        root.unlock-confirmation-visible = true;
+                                    }
+                                }
+                            }
+                            if root.unlock-confirmation-visible: HorizontalLayout {
+                                height: 32px;
+                                spacing: 6px;
+                                Text {
+                                    text: "Clear trust and offline state?";
+                                    color: #d7e2e5;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                                CompactButton {
+                                    width: 44px;
+                                    text: "Yes";
+                                    enabled: !root.operation-busy;
+                                    clicked => {
+                                        root.unlock-confirmation-visible = false;
+                                        root.unlock-contact(root.selected-contact);
+                                    }
+                                }
+                                CompactButton {
+                                    width: 44px;
+                                    text: "No";
+                                    enabled: !root.operation-busy;
+                                    clicked => { root.unlock-confirmation-visible = false; }
+                                }
+                            }
+                        }
+
+                        if root.selected-section == 1: VerticalLayout {
+                            height: 108px;
+                            spacing: 6px;
+                            LineEdit {
+                                height: 32px;
+                                text <=> root.new-group-name;
+                                placeholder-text: "New group name";
+                                enabled: !root.operation-busy;
+                                accepted(value) => { root.create-group(value); }
+                            }
+                            HorizontalLayout {
+                                height: 32px;
+                                spacing: 6px;
+                                CommandButton {
+                                    text: "Create";
+                                    enabled: !root.operation-busy && root.new-group-name != "";
+                                    clicked => { root.create-group(root.new-group-name); }
+                                }
+                                CommandButton {
+                                    text: "Open";
+                                    enabled: !root.operation-busy
+                                        && root.selected-group >= 0
+                                        && !root.selected-group-active;
+                                    clicked => {
+                                        root.settings-visible = false;
+                                        root.open-group(root.selected-group);
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                height: 32px;
+                                spacing: 6px;
+                                CommandButton {
+                                    text: "Details";
+                                    enabled: !root.operation-busy && root.selected-group >= 0;
+                                    clicked => {
+                                        root.select-group(root.selected-group);
+                                        root.settings-visible = false;
+                                        root.new-one-to-one-visible = false;
+                                        root.contact-details-visible = false;
+                                        root.contact-confirmation = 0;
+                                        root.contact-deaddrop-input = "";
+                                        root.group-invites-visible = false;
+                                        root.private-request-input = "";
+                                        root.group-invite-input = "";
+                                        root.generated-group-material-label = "";
+                                        root.generated-group-material = "";
+                                        root.group-details-visible = true;
+                                        root.group-confirmation = 0;
+                                        root.connect-input-visible = false;
+                                        root.lock-confirmation-visible = false;
+                                    }
+                                }
+                                CommandButton {
+                                    text: "Invitations";
+                                    enabled: !root.operation-busy;
+                                    clicked => {
+                                        root.settings-visible = false;
+                                        root.new-one-to-one-visible = false;
+                                        root.contact-details-visible = false;
+                                        root.contact-confirmation = 0;
+                                        root.contact-deaddrop-input = "";
+                                        root.group-details-visible = false;
+                                        root.group-invites-visible = true;
+                                        root.group-confirmation = 0;
+                                        root.connect-input-visible = false;
+                                        root.lock-confirmation-visible = false;
+                                    }
+                                }
+                            }
+                        }
+
+                        CommandButton {
+                            text: root.settings-visible ? "Back to chats" : "Settings";
+                            enabled: !root.new-one-to-one-visible;
+                            clicked => {
+                                if root.settings-visible {
+                                    root.cancel-settings-data-action();
+                                }
+                                if root.contact-export-visible {
+                                    root.cancel-contact-export();
+                                }
+                                root.settings-visible = !root.settings-visible;
+                                root.new-one-to-one-visible = false;
+                                root.contact-details-visible = false;
+                                root.contact-confirmation = 0;
+                                root.contact-deaddrop-input = "";
+                                root.group-invites-visible = false;
+                                root.group-details-visible = false;
+                                root.group-confirmation = 0;
+                                root.private-request-input = "";
+                                root.group-invite-input = "";
+                                root.generated-group-material-label = "";
+                                root.generated-group-material = "";
+                                root.connect-input-visible = false;
+                                root.unlock-confirmation-visible = false;
+                                root.lock-confirmation-visible = false;
+                            }
+                        }
+                    }
+                }
+
+                workspace := Rectangle {
+                    horizontal-stretch: 1;
+                    background: root.context-inspector-side-by-side ? transparent : #151d21;
+                    border-width: root.context-inspector-side-by-side ? 0px : 1px;
+                    border-color: #344148;
+                    border-radius: 5px;
+
+                    if root.settings-visible: settings-scroll := ScrollView {
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                        vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+                        viewport-width: self.visible-width;
+                        viewport-height: max(self.visible-height, settings-content.preferred-height);
+
+                        settings-content := VerticalLayout {
+                            width: settings-scroll.visible-width;
+                            padding: 18px;
+                            spacing: 10px;
+                        Text { text: "Settings"; color: #edf3f4; font-size: 18px; }
+
+                        Text {
+                            text: root.settings-transport-editable
+                                ? "SAM endpoint and defaults apply to newly opened sessions."
+                                : "Close all opening and active chats to edit the SAM endpoint or tunnel defaults.";
+                            color: root.settings-transport-editable ? #87959a : #d5aa64;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            height: 30px;
+                            spacing: 8px;
+                            Text {
+                                width: 112px;
+                                text: "SAM host";
+                                color: #87959a;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            LineEdit {
+                                height: 28px;
+                                text <=> root.settings-sam-host;
+                                placeholder-text: "127.0.0.1";
+                                enabled: root.settings-transport-editable && !root.operation-busy;
+                                accepted(value) => { root.set-sam-host(value); }
+                            }
+                            CommandButton {
+                                width: 72px;
+                                text: "Save";
+                                enabled: root.settings-transport-editable
+                                    && !root.operation-busy
+                                    && root.settings-sam-host != "";
+                                clicked => { root.set-sam-host(root.settings-sam-host); }
+                            }
+                        }
+                        HorizontalLayout {
+                            height: 30px;
+                            spacing: 8px;
+                            Text {
+                                width: 112px;
+                                text: "SAM port";
+                                color: #87959a;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            LineEdit {
+                                height: 28px;
+                                text <=> root.settings-sam-port;
+                                placeholder-text: "7656";
+                                input-type: InputType.number;
+                                enabled: root.settings-transport-editable && !root.operation-busy;
+                                accepted(value) => { root.set-sam-port(value); }
+                            }
+                            CommandButton {
+                                width: 72px;
+                                text: "Save";
+                                enabled: root.settings-transport-editable
+                                    && !root.operation-busy
+                                    && root.settings-sam-port != "";
+                                clicked => { root.set-sam-port(root.settings-sam-port); }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #344148; }
+
+                        HorizontalLayout {
+                            height: 28px;
+                            spacing: 8px;
+                            Text {
+                                width: 112px;
+                                text: "Tunnel length";
+                                color: #87959a;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            CompactButton {
+                                width: 34px;
+                                text: "-";
+                                enabled: root.settings-transport-editable
+                                    && !root.operation-busy
+                                    && root.settings-tunnel-length > 1;
+                                clicked => {
+                                    root.settings-tunnel-length = root.settings-tunnel-length - 1;
+                                }
+                            }
+                            Text {
+                                width: 28px;
+                                text: "" + root.settings-tunnel-length;
+                                color: #dce5e7;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            CompactButton {
+                                width: 34px;
+                                text: "+";
+                                enabled: root.settings-transport-editable
+                                    && !root.operation-busy
+                                    && root.settings-tunnel-length < 4;
+                                clicked => {
+                                    root.settings-tunnel-length = root.settings-tunnel-length + 1;
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                        }
+                        HorizontalLayout {
+                            height: 28px;
+                            spacing: 8px;
+                            Text {
+                                width: 112px;
+                                text: "Tunnel quantity";
+                                color: #87959a;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            CompactButton {
+                                width: 34px;
+                                text: "-";
+                                enabled: root.settings-transport-editable
+                                    && !root.operation-busy
+                                    && root.settings-tunnel-quantity > 1;
+                                clicked => {
+                                    root.settings-tunnel-quantity = root.settings-tunnel-quantity - 1;
+                                }
+                            }
+                            Text {
+                                width: 28px;
+                                text: "" + root.settings-tunnel-quantity;
+                                color: #dce5e7;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            CompactButton {
+                                width: 34px;
+                                text: "+";
+                                enabled: root.settings-transport-editable
+                                    && !root.operation-busy
+                                    && root.settings-tunnel-quantity < 5;
+                                clicked => {
+                                    root.settings-tunnel-quantity = root.settings-tunnel-quantity + 1;
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            CommandButton {
+                                width: 112px;
+                                text: "Save defaults";
+                                enabled: root.settings-transport-editable && !root.operation-busy;
+                                clicked => {
+                                    root.set-default-tunnels(
+                                        root.settings-tunnel-length,
+                                        root.settings-tunnel-quantity
+                                    );
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #344148; }
+
+                        liveness-checkbox := CheckBox {
+                            text: "Automatic SAM liveness monitoring";
+                            font-size: 12px;
+                            checked: root.settings-sam-liveness-enabled;
+                            enabled: !root.operation-busy;
+                            toggled => { root.set-sam-liveness(liveness-checkbox.checked); }
+                        }
+                        failure-checkbox := CheckBox {
+                            text: "Gracefully shut down if SAM becomes unavailable";
+                            font-size: 12px;
+                            checked: root.settings-sam-shutdown-on-failure;
+                            enabled: !root.operation-busy;
+                            toggled => { root.set-sam-failure-action(failure-checkbox.checked); }
+                        }
+
+                        HorizontalLayout {
+                            height: 26px;
+                            Text { text: "Monitor"; color: #87959a; font-size: 12px; }
+                            Text {
+                                text: root.settings-sam-monitor-status;
+                                color: root.settings-sam-monitor-tone == 3 ? #df7c73
+                                    : root.settings-sam-monitor-tone == 2 ? #d5aa64
+                                    : root.settings-sam-monitor-tone == 1 ? #70c990
+                                    : #dce5e7;
+                                font-size: 12px;
+                                horizontal-alignment: right;
+                            }
+                        }
+                        HorizontalLayout {
+                            height: 28px;
+                            spacing: 8px;
+                            Text { text: "Manual test"; color: #87959a; font-size: 12px; }
+                            Text {
+                                text: root.settings-sam-test-status;
+                                color: root.settings-sam-test-tone == 3 ? #df7c73
+                                    : root.settings-sam-test-tone == 1 ? #70c990
+                                    : #dce5e7;
+                                font-size: 12px;
+                                horizontal-alignment: right;
+                            }
+                            CommandButton {
+                                width: 88px;
+                                text: root.settings-sam-test-running ? "Testing..." : "Test SAM";
+                                enabled: !root.operation-busy && !root.settings-sam-test-running;
+                                clicked => { root.test-sam(); }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #344148; }
+                        Text {
+                            text: "Data Management";
+                            color: #edf3f4;
+                            font-size: 14px;
+                        }
+                        Text {
+                            text: root.settings-transport-editable
+                                ? "Encrypted backups and destructive storage operations require all chats to be closed."
+                                : "Close all opening and active chats before managing stored data.";
+                            color: root.settings-transport-editable ? #87959a : #d5aa64;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            height: 30px;
+                            spacing: 6px;
+                            CommandButton {
+                                text: "Create backup";
+                                enabled: root.settings-transport-editable && !root.operation-busy;
+                                clicked => { root.begin-settings-data-action(1); }
+                            }
+                            CommandButton {
+                                text: "Restore backup";
+                                enabled: root.settings-transport-editable && !root.operation-busy;
+                                clicked => { root.begin-settings-data-action(2); }
+                            }
+                            CommandButton {
+                                text: "Import contact";
+                                enabled: root.settings-transport-editable && !root.operation-busy;
+                                clicked => { root.begin-settings-data-action(3); }
+                            }
+                            CommandButton {
+                                text: "Wipe all data";
+                                enabled: root.settings-transport-editable && !root.operation-busy;
+                                clicked => { root.begin-settings-data-action(4); }
+                            }
+                        }
+
+                        if root.settings-data-action != 0: Rectangle {
+                            height: root.settings-data-confirmation-visible ? 82px
+                                : root.settings-data-action == 4 ? 100px
+                                : root.settings-data-action == 3 ? 132px
+                                : 162px;
+                            background: #101619;
+                            border-width: 1px;
+                            border-color: root.settings-data-action == 4 ? #8b5d5d : #344148;
+                            border-radius: 4px;
+
+                            VerticalLayout {
+                                padding: 8px;
+                                spacing: 6px;
+
+                                if root.settings-data-confirmation-visible: Text {
+                                    text: root.settings-data-confirmation-text;
+                                    color: root.settings-data-action == 4 ? #df7c73 : #dce5e7;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                                if root.settings-data-confirmation-visible: HorizontalLayout {
+                                    height: 28px;
+                                    spacing: 6px;
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    CommandButton {
+                                        width: 72px;
+                                        text: "Confirm";
+                                        enabled: !root.operation-busy;
+                                        clicked => {
+                                            root.confirm-settings-data-action(
+                                                root.settings-data-action,
+                                                true
+                                            );
+                                        }
+                                    }
+                                    CommandButton {
+                                        width: 72px;
+                                        text: "Cancel";
+                                        enabled: !root.operation-busy;
+                                        clicked => {
+                                            root.confirm-settings-data-action(
+                                                root.settings-data-action,
+                                                false
+                                            );
+                                        }
+                                    }
+                                }
+
+                                if !root.settings-data-confirmation-visible
+                                    && root.settings-data-action != 4: HorizontalLayout {
+                                    height: 30px;
+                                    spacing: 6px;
+                                    LineEdit {
+                                        height: 28px;
+                                        text <=> root.settings-data-path;
+                                        placeholder-text: "Encrypted data file path";
+                                        enabled: !root.operation-busy;
+                                    }
+                                    CommandButton {
+                                        width: 76px;
+                                        text: "Browse";
+                                        enabled: !root.operation-busy;
+                                        clicked => {
+                                            root.choose-settings-data-path(root.settings-data-action);
+                                        }
+                                    }
+                                }
+                                if !root.settings-data-confirmation-visible: LineEdit {
+                                    height: 28px;
+                                    text <=> root.settings-data-passphrase;
+                                    input-type: InputType.password;
+                                    placeholder-text: root.settings-data-action == 4
+                                        ? "Current vault passphrase"
+                                        : "Encryption passphrase";
+                                    enabled: !root.operation-busy;
+                                }
+                                if !root.settings-data-confirmation-visible
+                                    && root.settings-data-action == 1: LineEdit {
+                                    height: 28px;
+                                    text <=> root.settings-data-passphrase-confirm;
+                                    input-type: InputType.password;
+                                    placeholder-text: "Confirm encryption passphrase";
+                                    enabled: !root.operation-busy;
+                                }
+                                if !root.settings-data-confirmation-visible
+                                    && root.settings-data-action == 1: CheckBox {
+                                    text: "Include received files";
+                                    font-size: 11px;
+                                    checked <=> root.settings-data-option;
+                                    enabled: !root.operation-busy;
+                                }
+                                if !root.settings-data-confirmation-visible
+                                    && root.settings-data-action == 2: CheckBox {
+                                    text: "Restore received files";
+                                    font-size: 11px;
+                                    checked <=> root.settings-data-option;
+                                    enabled: !root.operation-busy;
+                                }
+                                if !root.settings-data-confirmation-visible: HorizontalLayout {
+                                    height: 28px;
+                                    spacing: 6px;
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    CommandButton {
+                                        width: 92px;
+                                        text: root.settings-data-action == 1 ? "Create"
+                                            : root.settings-data-action == 2 ? "Continue"
+                                            : root.settings-data-action == 3 ? "Inspect"
+                                            : "Continue";
+                                        enabled: !root.operation-busy;
+                                        clicked => {
+                                            root.submit-settings-data-action(
+                                                root.settings-data-action,
+                                                root.settings-data-path,
+                                                root.settings-data-passphrase,
+                                                root.settings-data-passphrase-confirm,
+                                                root.settings-data-option
+                                            );
+                                        }
+                                    }
+                                    CommandButton {
+                                        width: 72px;
+                                        text: "Cancel";
+                                        enabled: !root.operation-busy;
+                                        clicked => { root.cancel-settings-data-action(); }
+                                    }
+                                }
+                            }
+                        }
+                            Rectangle { vertical-stretch: 1; background: transparent; }
+                        }
+                    }
+
+                    if !root.settings-visible: HorizontalLayout {
+                        spacing: root.context-inspector-side-by-side ? 8px : 0px;
+
+                    if root.contact-details-visible: Rectangle {
+                        min-width: root.context-inspector-side-by-side ? root.context-inspector-width : 0px;
+                        preferred-width: root.context-inspector-side-by-side ? root.context-inspector-width : 0px;
+                        max-width: root.context-inspector-side-by-side ? root.context-inspector-width : root.width;
+                        horizontal-stretch: root.context-inspector-side-by-side ? 0 : 1;
+                        height: workspace.height;
+                        background: #151d21;
+                        clip: true;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 7px;
+
+                            HorizontalLayout {
+                                height: 32px;
+                                spacing: 6px;
+                                Text {
+                                    text: root.contact-detail-name;
+                                    color: #edf3f4;
+                                    font-size: 16px;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
+                                CommandButton {
+                                    width: 92px;
+                                    text: "Back to chats";
+                                    enabled: !root.operation-busy;
+                                    clicked => {
+                                        root.cancel-contact-export();
+                                        root.contact-details-visible = false;
+                                        root.contact-confirmation = 0;
+                                        root.contact-deaddrop-input = "";
+                                        root.selected-contact-deaddrop = -1;
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                height: 22px;
+                                spacing: 8px;
+                                Text { text: "P"; color: #70c990; font-size: 12px; vertical-alignment: center; }
+                                Text {
+                                    text: root.selected-contact-pinned ? "Locked" : "Unlocked";
+                                    color: root.selected-contact-pinned ? #70c990 : #87959a;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.selected-contact-active ? "Open" : "Closed";
+                                    color: root.selected-contact-active ? #47bfd1 : #87959a;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
+                            }
+
+                            HorizontalLayout {
+                                height: 30px;
+                                spacing: 6px;
+                                LineEdit {
+                                    width: (root.context-inspector-width - 30px) / 2;
+                                    height: 28px;
+                                    text <=> root.contact-rename-input;
+                                    placeholder-text: "Contact name";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0;
+                                    accepted(value) => {
+                                        root.rename-contact(root.selected-contact, value);
+                                    }
+                                }
+                                CommandButton {
+                                    width: (root.context-inspector-width - 30px) / 2;
+                                    text: "Rename contact";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0
+                                        && root.contact-rename-input != "";
+                                    clicked => {
+                                        root.rename-contact(
+                                            root.selected-contact,
+                                            root.contact-rename-input
+                                        );
+                                    }
+                                }
+                            }
+
+                            AddressCopyControl {
+                                width: root.context-inspector-width - 24px;
+                                prefix: "";
+                                address: root.contact-detail-local-b32;
+                                accent: #70c990;
+                                compact: true;
+                                full-address: true;
+                                activated => { root.copy-address(root.contact-detail-local-b32, true); }
+                            }
+                            AddressCopyControl {
+                                width: root.context-inspector-width - 24px;
+                                prefix: "";
+                                address: root.contact-detail-peer-b32;
+                                accent: #47bfd1;
+                                compact: true;
+                                full-address: true;
+                                activated => { root.copy-address(root.contact-detail-peer-b32, false); }
+                            }
+
+                            HorizontalLayout {
+                                height: 30px;
+                                spacing: 6px;
+                                CommandButton {
+                                    text: root.contact-history-enabled ? "History: On" : "History: Off";
+                                    enabled: !root.operation-busy && root.contact-confirmation == 0;
+                                    clicked => {
+                                        root.set-contact-history(
+                                            root.selected-contact,
+                                            !root.contact-history-enabled
+                                        );
+                                    }
+                                }
+                                CommandButton {
+                                    text: "Clear history";
+                                    enabled: !root.operation-busy && root.contact-confirmation == 0;
+                                    clicked => { root.contact-confirmation = 1; }
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: #344148; }
+                            Text {
+                                text: "SAM tunnels (next open)";
+                                color: #87959a;
+                                font-size: 11px;
+                            }
+                            HorizontalLayout {
+                                height: 28px;
+                                spacing: 6px;
+                                Text {
+                                    text: "Length";
+                                    color: #d7e2e5;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
+                                CompactButton {
+                                    width: 34px;
+                                    text: "-";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0
+                                        && root.contact-tunnel-length > 1;
+                                    clicked => {
+                                        root.contact-tunnel-length = root.contact-tunnel-length - 1;
+                                    }
+                                }
+                                Text {
+                                    width: 24px;
+                                    text: "" + root.contact-tunnel-length;
+                                    color: #edf3f4;
+                                    font-size: 11px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                CompactButton {
+                                    width: 34px;
+                                    text: "+";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0
+                                        && root.contact-tunnel-length < 4;
+                                    clicked => {
+                                        root.contact-tunnel-length = root.contact-tunnel-length + 1;
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                height: 28px;
+                                spacing: 6px;
+                                Text {
+                                    text: "Quantity";
+                                    color: #d7e2e5;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
+                                CompactButton {
+                                    width: 34px;
+                                    text: "-";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0
+                                        && root.contact-tunnel-quantity > 1;
+                                    clicked => {
+                                        root.contact-tunnel-quantity = root.contact-tunnel-quantity - 1;
+                                    }
+                                }
+                                Text {
+                                    width: 24px;
+                                    text: "" + root.contact-tunnel-quantity;
+                                    color: #edf3f4;
+                                    font-size: 11px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                CompactButton {
+                                    width: 34px;
+                                    text: "+";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0
+                                        && root.contact-tunnel-quantity < 5;
+                                    clicked => {
+                                        root.contact-tunnel-quantity = root.contact-tunnel-quantity + 1;
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                height: 30px;
+                                spacing: 6px;
+                                CommandButton {
+                                    text: "Save tunnels";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0;
+                                    clicked => {
+                                        root.set-contact-tunnels(
+                                            root.selected-contact,
+                                            root.contact-tunnel-length,
+                                            root.contact-tunnel-quantity
+                                        );
+                                    }
+                                }
+                                CommandButton {
+                                    text: "Defaults";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0;
+                                    clicked => { root.reset-contact-tunnels(root.selected-contact); }
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: #344148; }
+                            HorizontalLayout {
+                                height: 20px;
+                                Text {
+                                    text: "Deaddrop servers";
+                                    color: #d7e2e5;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.contact-deaddrop-summary;
+                                    color: #87959a;
+                                    font-size: 10px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            HorizontalLayout {
+                                height: 30px;
+                                spacing: 6px;
+                                LineEdit {
+                                    height: 28px;
+                                    text <=> root.contact-deaddrop-input;
+                                    placeholder-text: "Server b32.i2p";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0;
+                                    accepted(value) => {
+                                        root.add-contact-deaddrop(root.selected-contact, value);
+                                    }
+                                }
+                                CommandButton {
+                                    width: 48px;
+                                    text: "Add";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0
+                                        && root.contact-deaddrop-input != "";
+                                    clicked => {
+                                        root.add-contact-deaddrop(
+                                            root.selected-contact,
+                                            root.contact-deaddrop-input
+                                        );
+                                    }
+                                }
+                            }
+                            ListView {
+                                vertical-stretch: 1;
+                                for server[index] in root.contact-deaddrops: DeaddropServerRow {
+                                    entry: server;
+                                    selected: root.selected-contact-deaddrop == index;
+                                    activated => {
+                                        root.selected-contact-deaddrop = index;
+                                        root.selected-contact-deaddrop-removable = server.removable;
+                                        root.contact-confirmation = 0;
+                                    }
+                                }
+                            }
+                            CommandButton {
+                                text: "Remove selected server";
+                                enabled: !root.operation-busy && !root.selected-contact-active
+                                    && root.contact-confirmation == 0
+                                    && root.selected-contact-deaddrop-removable;
+                                clicked => { root.contact-confirmation = 2; }
+                            }
+
+                            Rectangle { height: 1px; background: #344148; }
+                            CommandButton {
+                                text: "Export contact";
+                                enabled: !root.operation-busy && !root.selected-contact-active
+                                    && root.contact-confirmation == 0
+                                    && !root.contact-export-visible;
+                                clicked => {
+                                    root.begin-contact-export(root.selected-contact);
+                                }
+                            }
+                            if root.contact-export-visible: Rectangle {
+                                height: 194px;
+                                background: #101619;
+                                border-width: 1px;
+                                border-color: #344148;
+                                border-radius: 4px;
+
+                                VerticalLayout {
+                                    padding: 8px;
+                                    spacing: 6px;
+                                    HorizontalLayout {
+                                        height: 30px;
+                                        spacing: 6px;
+                                        LineEdit {
+                                            height: 28px;
+                                            text <=> root.contact-export-path;
+                                            placeholder-text: "Encrypted contact file path";
+                                            enabled: !root.operation-busy;
+                                        }
+                                        CommandButton {
+                                            width: 68px;
+                                            text: "Browse";
+                                            enabled: !root.operation-busy;
+                                            clicked => { root.choose-contact-export-path(); }
+                                        }
+                                    }
+                                    LineEdit {
+                                        height: 28px;
+                                        text <=> root.contact-export-passphrase;
+                                        input-type: InputType.password;
+                                        placeholder-text: "Encryption passphrase";
+                                        enabled: !root.operation-busy;
+                                    }
+                                    LineEdit {
+                                        height: 28px;
+                                        text <=> root.contact-export-passphrase-confirm;
+                                        input-type: InputType.password;
+                                        placeholder-text: "Confirm encryption passphrase";
+                                        enabled: !root.operation-busy;
+                                    }
+                                    contact-export-history-checkbox := CheckBox {
+                                        text: "Include retained text history";
+                                        font-size: 11px;
+                                        checked <=> root.contact-export-history;
+                                        enabled: !root.operation-busy;
+                                    }
+                                    HorizontalLayout {
+                                        height: 28px;
+                                        spacing: 6px;
+                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                        CommandButton {
+                                            width: 72px;
+                                            text: "Export";
+                                            enabled: !root.operation-busy;
+                                            clicked => {
+                                                root.submit-contact-export(
+                                                    root.selected-contact,
+                                                    root.contact-export-path,
+                                                    root.contact-export-passphrase,
+                                                    root.contact-export-passphrase-confirm,
+                                                    root.contact-export-history
+                                                );
+                                            }
+                                        }
+                                        CommandButton {
+                                            width: 72px;
+                                            text: "Cancel";
+                                            enabled: !root.operation-busy;
+                                            clicked => { root.cancel-contact-export(); }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: #344148; }
+                            HorizontalLayout {
+                                height: 30px;
+                                spacing: 6px;
+                                CommandButton {
+                                    text: "Reset contact";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0;
+                                    clicked => { root.contact-confirmation = 3; }
+                                }
+                                CommandButton {
+                                    text: "Delete contact";
+                                    enabled: !root.operation-busy && !root.selected-contact-active
+                                        && root.contact-confirmation == 0;
+                                    clicked => { root.contact-confirmation = 4; }
+                                }
+                            }
+
+                            if root.contact-confirmation != 0: Rectangle {
+                                height: 58px;
+                                background: #101619;
+                                border-width: 1px;
+                                border-color: #8b5d5d;
+                                border-radius: 4px;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 6px;
+                                    Text {
+                                        text: root.contact-confirmation == 1
+                                            ? "Clear all retained text history?"
+                                            : root.contact-confirmation == 2
+                                                ? "Remove the selected deaddrop server?"
+                                            : root.contact-confirmation == 3
+                                                ? "Reset trust, offline state, history, and deaddrop statistics?"
+                                            : "Delete this contact and its retained history?";
+                                        color: #d7e2e5;
+                                        font-size: 10px;
+                                        wrap: word-wrap;
+                                        vertical-alignment: center;
+                                    }
+                                    CompactButton {
+                                        width: 40px;
+                                        text: "Yes";
+                                        enabled: !root.operation-busy;
+                                        clicked => {
+                                            if root.contact-confirmation == 1 {
+                                                root.clear-contact-history(root.selected-contact);
+                                            } else if root.contact-confirmation == 2 {
+                                                root.remove-contact-deaddrop(
+                                                    root.selected-contact,
+                                                    root.selected-contact-deaddrop
+                                                );
+                                            } else if root.contact-confirmation == 3 {
+                                                root.reset-contact(root.selected-contact);
+                                            } else if root.contact-confirmation == 4 {
+                                                root.delete-contact(root.selected-contact);
+                                            }
+                                        }
+                                    }
+                                    CompactButton {
+                                        width: 40px;
+                                        text: "No";
+                                        enabled: !root.operation-busy;
+                                        clicked => { root.contact-confirmation = 0; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.group-details-visible: Rectangle {
+                        min-width: root.context-inspector-side-by-side ? root.context-inspector-width : 0px;
+                        preferred-width: root.context-inspector-side-by-side ? root.context-inspector-width : 0px;
+                        max-width: root.context-inspector-side-by-side ? root.context-inspector-width : root.width;
+                        horizontal-stretch: root.context-inspector-side-by-side ? 0 : 1;
+                        height: workspace.height;
+                        background: #151d21;
+                        clip: true;
+
+                        VerticalLayout {
+                            padding-top: 18px;
+                            padding-bottom: 18px;
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 10px;
+
+                        HorizontalLayout {
+                            height: 32px;
+                            Text {
+                                text: root.group-detail-name;
+                                color: #edf3f4;
+                                font-size: 18px;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            CommandButton {
+                                width: 110px;
+                                text: "Back to chats";
+                                enabled: !root.operation-busy;
+                                clicked => {
+                                    root.group-details-visible = false;
+                                    root.group-confirmation = 0;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            height: 24px;
+                            spacing: 14px;
+                            Text {
+                                text: root.group-detail-role;
+                                color: root.selected-group-owner ? #70c990 : #47bfd1;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.group-detail-roster;
+                                color: #87959a;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.selected-group-active ? "Open" : "Closed";
+                                color: root.selected-group-active ? #70c990 : #87959a;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            if !root.selected-group-owner: Text {
+                                text: root.group-owner-ready ? "Owner online" : "Owner unavailable";
+                                color: root.group-owner-ready ? #70c990 : #d6a85f;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            if root.group-leave-pending: Text {
+                                text: "Leave pending";
+                                color: #d6a85f;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                        }
+
+                        AddressCopyControl {
+                            width: root.context-inspector-width - 24px;
+                            prefix: "";
+                            address: root.group-detail-local-b32;
+                            accent: #70c990;
+                            compact: true;
+                            full-address: true;
+                            activated => { root.copy-address(root.group-detail-local-b32, true); }
+                        }
+
+                        HorizontalLayout {
+                            height: 30px;
+                            spacing: 6px;
+                            LineEdit {
+                                width: (root.context-inspector-width - 30px) / 2;
+                                height: 28px;
+                                text <=> root.group-local-name-input;
+                                placeholder-text: "Local member name";
+                                enabled: !root.operation-busy && root.group-confirmation == 0;
+                                accepted(value) => {
+                                    root.set-group-local-name(root.selected-group, value);
+                                }
+                            }
+                            CommandButton {
+                                width: (root.context-inspector-width - 30px) / 2;
+                                text: "Save name";
+                                enabled: !root.operation-busy
+                                    && root.group-confirmation == 0
+                                    && root.group-local-name-input != "";
+                                clicked => {
+                                    root.set-group-local-name(
+                                        root.selected-group,
+                                        root.group-local-name-input
+                                    );
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            height: 30px;
+                            spacing: 8px;
+                            CommandButton {
+                                text: root.group-history-enabled ? "History: On" : "History: Off";
+                                enabled: !root.operation-busy && root.group-confirmation == 0;
+                                clicked => {
+                                    root.set-group-history(
+                                        root.selected-group,
+                                        !root.group-history-enabled
+                                    );
+                                }
+                            }
+                            CommandButton {
+                                text: "Clear history";
+                                enabled: !root.operation-busy && root.group-confirmation == 0;
+                                clicked => { root.group-confirmation = 6; }
+                            }
+                        }
+
+                        Text {
+                            text: "Members";
+                            color: #d7e2e5;
+                            font-size: 12px;
+                        }
+                        ListView {
+                            vertical-stretch: 1;
+                            for member[index] in root.group-members: GroupMemberRow {
+                                entry: member;
+                                selected: root.selected-group-member == index;
+                                activated => {
+                                    root.selected-group-member = index;
+                                    root.selected-group-member-removable = member.removable;
+                                    root.group-confirmation = 0;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            height: 32px;
+                            spacing: 8px;
+                            CommandButton {
+                                text: "Remove member";
+                                enabled: !root.operation-busy
+                                    && root.group-confirmation == 0
+                                    && root.selected-group-member-removable;
+                                clicked => { root.group-confirmation = 1; }
+                            }
+                            if !root.selected-group-owner: CommandButton {
+                                text: "Leave group";
+                                enabled: !root.operation-busy
+                                    && root.group-confirmation == 0
+                                    && (!root.group-leave-pending || !root.group-owner-ready);
+                                clicked => {
+                                    root.group-confirmation = root.group-owner-ready ? 2 : 3;
+                                }
+                            }
+                            if root.selected-group-owner: CommandButton {
+                                text: "Dissolve group";
+                                enabled: !root.operation-busy
+                                    && root.group-confirmation == 0
+                                    && !root.group-leave-pending;
+                                clicked => { root.group-confirmation = 4; }
+                            }
+                            CommandButton {
+                                text: "Delete local data";
+                                enabled: !root.operation-busy
+                                    && root.group-confirmation == 0
+                                    && !root.selected-group-active;
+                                clicked => { root.group-confirmation = 5; }
+                            }
+                        }
+
+                            if root.group-confirmation != 0: Rectangle {
+                            height: 48px;
+                            background: #101619;
+                            border-width: 1px;
+                            border-color: root.group-confirmation >= 3 ? #8b5d5d : #46565c;
+                            border-radius: 4px;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 6px;
+                                spacing: 8px;
+                                Text {
+                                    text: root.group-confirmation == 1 ? "Remove the selected member?"
+                                        : root.group-confirmation == 2 ? "Request removal from the owner's signed roster?"
+                                        : root.group-confirmation == 3 ? "Owner unavailable. Leave locally with stale peers possible?"
+                                        : root.group-confirmation == 4 ? "Dissolve this group for connected participants?"
+                                        : root.group-confirmation == 5 ? "Delete only this installation's local group data?"
+                                        : "Clear all retained group text history?";
+                                    color: #d7e2e5;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                    vertical-alignment: center;
+                                }
+                                CompactButton {
+                                    width: 44px;
+                                    text: "Yes";
+                                    enabled: !root.operation-busy;
+                                    clicked => {
+                                        if root.group-confirmation == 1 {
+                                            root.remove-group-member(
+                                                root.selected-group,
+                                                root.selected-group-member
+                                            );
+                                        } else if root.group-confirmation == 2 {
+                                            root.leave-group(root.selected-group, false);
+                                        } else if root.group-confirmation == 3 {
+                                            root.leave-group(root.selected-group, true);
+                                        } else if root.group-confirmation == 4 {
+                                            root.dissolve-group(root.selected-group);
+                                        } else if root.group-confirmation == 5 {
+                                            root.delete-group(root.selected-group);
+                                        } else {
+                                            root.clear-group-history(root.selected-group);
+                                        }
+                                    }
+                                }
+                                CompactButton {
+                                    width: 44px;
+                                    text: "No";
+                                    enabled: !root.operation-busy;
+                                    clicked => { root.group-confirmation = 0; }
+                                }
+                            }
+                            }
+                        }
+                    }
+
+                    if root.group-invites-visible
+                        && !root.group-details-visible: Rectangle {
+                        min-width: root.context-inspector-side-by-side ? root.context-inspector-width : 0px;
+                        preferred-width: root.context-inspector-side-by-side ? root.context-inspector-width : 0px;
+                        max-width: root.context-inspector-side-by-side ? root.context-inspector-width : root.width;
+                        horizontal-stretch: root.context-inspector-side-by-side ? 0 : 1;
+                        height: workspace.height;
+                        background: #151d21;
+                        clip: true;
+
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 12px;
+
+                        HorizontalLayout {
+                            height: 32px;
+                            Text {
+                                text: "Group invitations";
+                                color: #edf3f4;
+                                font-size: 18px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            CommandButton {
+                                width: 110px;
+                                text: "Back to chats";
+                                enabled: !root.operation-busy;
+                                clicked => {
+                                    root.group-invites-visible = false;
+                                    root.private-request-input = "";
+                                    root.group-invite-input = "";
+                                    root.generated-group-material-label = "";
+                                    root.generated-group-material = "";
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: root.selected-group >= 0
+                                ? (root.selected-group-owner
+                                    ? (root.selected-group-active
+                                        ? "Close the selected group before issuing owner invitations."
+                                        : "Owner-issued actions use the selected closed group.")
+                                    : "This installation is a participant; owner-issued actions are unavailable.")
+                                : "Select a group for owner-issued invitations. Import remains available.";
+                            color: #87959a;
+                            font-size: 11px;
+                        }
+
+                        HorizontalLayout {
+                            height: 32px;
+                            spacing: 8px;
+                            CommandButton {
+                                text: "Generate public invite";
+                                enabled: !root.operation-busy
+                                    && root.selected-group >= 0
+                                    && root.selected-group-owner
+                                    && !root.selected-group-active;
+                                clicked => { root.generate-public-invite(root.selected-group); }
+                            }
+                            CommandButton {
+                                text: "Generate private request";
+                                enabled: !root.operation-busy;
+                                clicked => { root.generate-private-request(); }
+                            }
+                        }
+
+                        Text {
+                            text: "Answer a recipient's private request";
+                            color: #d7e2e5;
+                            font-size: 12px;
+                        }
+                        HorizontalLayout {
+                            height: 32px;
+                            spacing: 8px;
+                            LineEdit {
+                                text <=> root.private-request-input;
+                                placeholder-text: "Paste private request";
+                                enabled: !root.operation-busy;
+                                accepted(value) => {
+                                    root.answer-private-request(root.selected-group, value);
+                                }
+                            }
+                            CommandButton {
+                                width: 120px;
+                                text: "Answer request";
+                                enabled: !root.operation-busy
+                                    && root.selected-group >= 0
+                                    && root.selected-group-owner
+                                    && !root.selected-group-active
+                                    && root.private-request-input != "";
+                                clicked => {
+                                    root.answer-private-request(
+                                        root.selected-group,
+                                        root.private-request-input
+                                    );
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: root.generated-group-material-label == ""
+                                ? "Generated material"
+                                : root.generated-group-material-label;
+                            color: #d7e2e5;
+                            font-size: 12px;
+                        }
+                        HorizontalLayout {
+                            height: 32px;
+                            spacing: 8px;
+                            LineEdit {
+                                text: root.generated-group-material;
+                                placeholder-text: "Nothing generated";
+                                read-only: true;
+                            }
+                            CompactButton {
+                                width: 80px;
+                                text: "Copy";
+                                enabled: root.generated-group-material != "";
+                                clicked => {
+                                    root.copy-group-material(root.generated-group-material);
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #344148; }
+
+                        Text {
+                            text: "Join using a public or private invite";
+                            color: #d7e2e5;
+                            font-size: 12px;
+                        }
+                        HorizontalLayout {
+                            height: 32px;
+                            spacing: 8px;
+                            LineEdit {
+                                text <=> root.group-invite-input;
+                                placeholder-text: "Paste group invite";
+                                enabled: !root.operation-busy;
+                                accepted(value) => { root.import-group-invite(value); }
+                            }
+                            CompactButton {
+                                width: 80px;
+                                text: "Import";
+                                enabled: !root.operation-busy && root.group-invite-input != "";
+                                clicked => { root.import-group-invite(root.group-invite-input); }
+                            }
+                        }
+
+                            Rectangle { vertical-stretch: 1; background: transparent; }
+                        }
+                    }
+
+                    if !root.context-inspector-visible
+                        || root.context-inspector-side-by-side: Rectangle {
+                        min-width: 0px;
+                        horizontal-stretch: root.context-inspector-side-by-side ? 65 : 1;
+                        height: workspace.height;
+                        background: #151d21;
+                        border-width: root.context-inspector-side-by-side ? 1px : 0px;
+                        border-color: #344148;
+                        border-radius: root.context-inspector-side-by-side ? 5px : 0px;
+                        clip: true;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 4px;
+
+                        ScrollView {
+                            height: 40px;
+                            vertical-stretch: 0;
+                            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.as-needed;
+                            viewport-width: max(self.visible-width, session-tab-row.preferred-width);
+                            viewport-height: self.visible-height;
+
+                            session-tab-row := HorizontalLayout {
+                                y: 0px;
+                                height: 32px;
+                                spacing: 6px;
+                                for session[index] in root.sessions: SessionTab {
+                                    entry: session;
+                                    selected: root.selected-session == index;
+                                    activated => {
+                                        root.selected-session = index;
+                                        root.message-follow-bottom = true;
+                                        root.peer-address-input = session.connect-address;
+                                        root.message-input = "";
+                                        root.connect-input-visible = false;
+                                        root.lock-confirmation-visible = false;
+                                        root.select-session(index);
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.selected-session < 0: VerticalLayout {
+                            vertical-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: "No active chats";
+                                color: #87959a;
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                            if root.selected-session >= 0: VerticalLayout {
+                            vertical-stretch: 1;
+                            spacing: 8px;
+
+                            Rectangle {
+                                height: 38px;
+                                background: #101619;
+                                border-width: 1px;
+                                border-color: #2b3940;
+                                border-radius: 4px;
+
+                                VerticalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    alignment: center;
+                                    HorizontalLayout {
+                                        height: 20px;
+                                        spacing: 10px;
+                                        HorizontalLayout {
+                                            height: 20px;
+                                            horizontal-stretch: 0;
+                                            spacing: 10px;
+                                            SessionKindMarker {
+                                                label: root.sessions[root.selected-session].session-kind;
+                                            }
+                                            if root.sessions[root.selected-session].history-enabled: HistoryIndicator {
+                                                description: "Text history enabled";
+                                                accent: #70c990;
+                                            }
+                                            StatusMarker {
+                                                horizontal-stretch: 0;
+                                                label: root.sessions[root.selected-session].state;
+                                                tone: root.sessions[root.selected-session].state == "Connected" || root.sessions[root.selected-session].state == "Active" ? 2
+                                                    : root.sessions[root.selected-session].state == "Offline" ? 3
+                                                    : root.sessions[root.selected-session].state == "Failed" ? 4
+                                                    : root.sessions[root.selected-session].state == "Opening"
+                                                        || root.sessions[root.selected-session].state == "Incoming"
+                                                        || root.sessions[root.selected-session].state == "Connecting"
+                                                        || root.sessions[root.selected-session].state == "Securing" ? 1
+                                                    : 0;
+                                                hollow: root.sessions[root.selected-session].state == "Standby"
+                                                    || root.sessions[root.selected-session].state == "Disconnecting"
+                                                    || root.sessions[root.selected-session].state == "Closing"
+                                                    || root.sessions[root.selected-session].state == "Closed";
+                                            }
+                                            if root.sessions[root.selected-session].is-contact && !root.sessions[root.selected-session].opening: StatusMarker {
+                                                horizontal-stretch: 0;
+                                                label: root.sessions[root.selected-session].trust;
+                                                tone: root.sessions[root.selected-session].peer-pinned ? 2 : 3;
+                                                hollow: !root.sessions[root.selected-session].peer-pinned;
+                                            }
+                                            if root.sessions[root.selected-session].is-contact && root.sessions[root.selected-session].tofu-state != 0: StatusMarker {
+                                                horizontal-stretch: 0;
+                                                label: "TOFU";
+                                                tone: root.sessions[root.selected-session].tofu-state == 1 ? 2 : 4;
+                                            }
+                                            if root.sessions[root.selected-session].is-one-to-one && root.sessions[root.selected-session].rendezvous-authenticated: StatusMarker {
+                                                horizontal-stretch: 0;
+                                                label: "AUTH";
+                                                tone: 2;
+                                            }
+                                            if root.sessions[root.selected-session].offline-activity != "": Rectangle {
+                                                width: 68px;
+                                                height: 20px;
+                                                horizontal-stretch: 0;
+                                                background: transparent;
+                                                StatusMarker {
+                                                    width: parent.width;
+                                                    label: root.sessions[root.selected-session].offline-activity;
+                                                    tone: root.sessions[root.selected-session].offline-activity-tone;
+                                                }
+                                            }
+                                        }
+                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                            if root.sessions[root.selected-session].is-one-to-one && !root.sessions[root.selected-session].opening: HorizontalLayout {
+                                            height: 20px;
+                                            horizontal-stretch: 0;
+                                            spacing: 5px;
+                                            AddressCopyControl {
+                                                width: 96px;
+                                                prefix: "";
+                                                address: root.sessions[root.selected-session].local-b32;
+                                                display-address: root.sessions[root.selected-session].local-b32-display;
+                                                accent: #70c990;
+                                                compact: true;
+                                                activated => {
+                                                    root.copy-address(root.sessions[root.selected-session].local-b32, true);
+                                                }
+                                            }
+                                            Text {
+                                                width: 5px;
+                                                text: ":";
+                                                color: #7f8e93;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                            AddressCopyControl {
+                                                width: 96px;
+                                                prefix: "";
+                                                address: root.sessions[root.selected-session].peer-b32;
+                                                display-address: root.sessions[root.selected-session].peer-b32-display;
+                                                accent: #47bfd1;
+                                                compact: true;
+                                                activated => {
+                                                    root.copy-address(root.sessions[root.selected-session].peer-b32, false);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                vertical-stretch: 1;
+                                background: #0d1316;
+                                border-width: 1px;
+                                border-color: #344148;
+                                border-radius: 4px;
+                                clip: true;
+
+                                VerticalLayout {
+                                    padding: 6px;
+                                    if root.sessions[root.selected-session].is-one-to-one
+                                        || root.sessions[root.selected-session].session-kind == "G": ListView {
+                                        vertical-stretch: 1;
+                                        scrolled => {
+                                            root.message-follow-bottom = self.viewport-y
+                                                <= min(0px, self.visible-height - self.viewport-height) + 2px;
+                                        }
+                                        changed viewport-height => {
+                                            if root.message-follow-bottom {
+                                                self.viewport-y = min(
+                                                    0px,
+                                                    self.visible-height - self.viewport-height
+                                                );
+                                            }
+                                        }
+                                        for message[index] in root.messages: MessageRow {
+                                            entry: message;
+                                            actions-enabled: !root.operation-busy;
+                                            reply-enabled: !root.operation-busy
+                                                && root.sessions[root.selected-session].can-send;
+                                            request-original => {
+                                                root.request-original-image(root.selected-session, index);
+                                            }
+                                            cancel-original => {
+                                                root.cancel-original-image(root.selected-session, index);
+                                            }
+                                            accept-file => {
+                                                root.accept-file(root.selected-session, index);
+                                            }
+                                            decline-file => {
+                                                root.decline-file(root.selected-session, index);
+                                            }
+                                            cancel-file => {
+                                                root.cancel-file(root.selected-session, index);
+                                            }
+                                            copy-text => {
+                                                root.copy-text-message(root.selected-session, index);
+                                            }
+                                            reply-text => {
+                                                root.reply-text-message(root.selected-session, index);
+                                            }
+                                        }
+                                    }
+
+                                    if !root.sessions[root.selected-session].is-one-to-one
+                                        && root.sessions[root.selected-session].session-kind != "G": Rectangle {
+                                        vertical-stretch: 1;
+                                        background: transparent;
+                                    }
+                                }
+                            }
+
+                            if root.session-logs-visible: Rectangle {
+                                height: max(150px, min(230px, root.height * 0.25));
+                                background: #101619;
+                                border-width: 1px;
+                                border-color: #344148;
+                                border-radius: 4px;
+                                clip: true;
+
+                                VerticalLayout {
+                                    padding: 5px;
+                                    spacing: 4px;
+                                    HorizontalLayout {
+                                        height: 26px;
+                                        spacing: 6px;
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: root.session-log-summary;
+                                            color: #d7e2e5;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                        CompactButton {
+                                            width: 64px;
+                                            text: "Copy All";
+                                            enabled: !root.session-logs-empty;
+                                            clicked => {
+                                                root.copy-session-logs(root.selected-session);
+                                            }
+                                        }
+                                        CompactButton {
+                                            width: 50px;
+                                            text: "Clear";
+                                            enabled: !root.session-logs-empty;
+                                            clicked => {
+                                                root.clear-session-logs(root.selected-session);
+                                            }
+                                        }
+                                    }
+                                    ListView {
+                                        vertical-stretch: 1;
+                                        changed viewport-height => {
+                                            self.viewport-y = min(
+                                                0px,
+                                                self.visible-height - self.viewport-height
+                                            );
+                                        }
+                                        for entry in root.session-logs: LogRow {
+                                            entry: entry;
+                                        }
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                height: root.reply-visible ? 122px : 92px;
+                                spacing: 4px;
+
+                                if root.reply-visible: Rectangle {
+                                    height: 26px;
+                                    background: #121a1e;
+                                    border-width: 1px;
+                                    border-color: #3c4a50;
+                                    border-radius: 3px;
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 4px;
+                                        spacing: 6px;
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: "Reply to " + root.reply-author + ": " + root.reply-preview;
+                                            color: #aebbc0;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        CompactButton {
+                                            width: 54px;
+                                            height: 22px;
+                                            text: "Cancel";
+                                            enabled: !root.operation-busy;
+                                            clicked => { root.cancel-reply(root.selected-session); }
+                                        }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    vertical-stretch: 1;
+                                    spacing: 8px;
+                                    TextEdit {
+                                        horizontal-stretch: 1;
+                                        text <=> root.message-input;
+                                        enabled: !root.operation-busy && root.sessions[root.selected-session].can-send;
+                                        wrap: word-wrap;
+                                        placeholder-text: root.sessions[root.selected-session].can-send
+                                            ? (root.sessions[root.selected-session].offline
+                                                ? "Type an offline multiline message"
+                                                : "Type a multiline message")
+                                            : "Messaging is unavailable in this session";
+                                    }
+                                    VerticalLayout {
+                                        width: 86px;
+                                        alignment: center;
+                                        spacing: 6px;
+                                        Button {
+                                            height: 32px;
+                                            text: "Send";
+                                            enabled: !root.operation-busy
+                                                && root.sessions[root.selected-session].can-send
+                                                && root.message-input != "";
+                                            clicked => {
+                                                root.message-follow-bottom = true;
+                                                root.send-text(root.selected-session, root.message-input);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.sessions[root.selected-session].can-connect
+                                || root.sessions[root.selected-session].can-accept
+                                || root.sessions[root.selected-session].can-disconnect
+                                || root.sessions[root.selected-session].can-send-image
+                                || root.sessions[root.selected-session].can-send-file
+                                || root.sessions[root.selected-session].can-enter-offline
+                                || root.sessions[root.selected-session].can-leave-offline
+                                || root.sessions[root.selected-session].can-rendezvous
+                                || root.sessions[root.selected-session].has-details
+                                || !root.sessions[root.selected-session].opening
+                                || root.sessions[root.selected-session].can-close: Rectangle {
+                                height: root.rendezvous-visible
+                                    ? (root.rendezvous-output != "" ? 154px : 116px)
+                                    : (root.connect-input-visible && root.sessions[root.selected-session].can-connect)
+                                    || (root.lock-confirmation-visible && root.sessions[root.selected-session].can-lock)
+                                    ? 78px : 40px;
+                                background: #101619;
+                                border-width: 1px;
+                                border-color: #2b3940;
+                                border-radius: 4px;
+
+                                VerticalLayout {
+                                    padding: 4px;
+                                    spacing: 4px;
+                                    HorizontalLayout {
+                                        height: 30px;
+                                        spacing: 6px;
+                                        if root.sessions[root.selected-session].can-connect && !root.rendezvous-visible: CommandButton {
+                                            text: "Connect";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => {
+                                                root.connect-input-visible = true;
+                                                root.lock-confirmation-visible = false;
+                                            }
+                                        }
+                                        if root.sessions[root.selected-session].can-accept: CommandButton {
+                                            text: "Accept";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => { root.accept-session(root.selected-session); }
+                                        }
+                                        if root.sessions[root.selected-session].can-decline: CommandButton {
+                                            text: "Decline";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => { root.decline-session(root.selected-session); }
+                                        }
+                                        if root.sessions[root.selected-session].can-disconnect: CommandButton {
+                                            text: "Disconnect";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => { root.disconnect-session(root.selected-session); }
+                                        }
+                                        if root.sessions[root.selected-session].can-send-image: CommandButton {
+                                            text: "Send Image";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => {
+                                                root.message-follow-bottom = true;
+                                                root.send-image(root.selected-session);
+                                            }
+                                        }
+                                        if root.sessions[root.selected-session].can-send-file: CommandButton {
+                                            text: "Send File";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => {
+                                                root.message-follow-bottom = true;
+                                                root.send-file(root.selected-session);
+                                            }
+                                        }
+                                        if root.sessions[root.selected-session].can-lock: CommandButton {
+                                            text: "Lock peer";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => {
+                                                root.connect-input-visible = false;
+                                                root.lock-confirmation-visible = true;
+                                            }
+                                        }
+                                        if root.sessions[root.selected-session].can-enter-offline: CommandButton {
+                                            text: "Offline";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => { root.enter-offline(root.selected-session); }
+                                        }
+                                        if root.sessions[root.selected-session].can-leave-offline: CommandButton {
+                                            text: "Online";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => { root.leave-offline(root.selected-session); }
+                                        }
+                                        if root.sessions[root.selected-session].can-rendezvous: CommandButton {
+                                            text: root.rendezvous-visible ? "Hide Rendezvous" : "Rendezvous";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => {
+                                                root.connect-input-visible = false;
+                                                root.lock-confirmation-visible = false;
+                                                root.toggle-rendezvous(root.selected-session);
+                                            }
+                                        }
+                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                        if root.sessions[root.selected-session].has-details: CommandButton {
+                                            text: "Details";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => {
+                                                root.show-session-details(root.selected-session);
+                                            }
+                                        }
+                                        if !root.sessions[root.selected-session].opening: CommandButton {
+                                            text: root.session-logs-visible ? "Hide Logs" : "Show Logs";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => {
+                                                root.toggle-session-logs(root.selected-session);
+                                            }
+                                        }
+                                        if root.sessions[root.selected-session].can-close: CommandButton {
+                                            text: "Close";
+                                            enabled: !root.operation-busy
+                                                && !root.connect-input-visible
+                                                && !root.lock-confirmation-visible;
+                                            clicked => { root.close-session(root.selected-session); }
+                                        }
+                                    }
+
+                                    if root.rendezvous-visible: HorizontalLayout {
+                                        height: 30px;
+                                        spacing: 6px;
+                                        CommandButton {
+                                            text: "Generate Request";
+                                            enabled: !root.operation-busy;
+                                            clicked => { root.generate-rendezvous-request(root.selected-session); }
+                                        }
+                                        CommandButton {
+                                            text: "Revoke";
+                                            enabled: !root.operation-busy;
+                                            clicked => { root.revoke-rendezvous(root.selected-session); }
+                                        }
+                                    }
+
+                                    if root.rendezvous-visible: HorizontalLayout {
+                                        height: 32px;
+                                        spacing: 6px;
+                                        LineEdit {
+                                            text <=> root.rendezvous-input;
+                                            placeholder-text: "Paste rendezvous request or response";
+                                            enabled: !root.operation-busy;
+                                            accepted(value) => {
+                                                root.submit-rendezvous-input(root.selected-session, value);
+                                            }
+                                        }
+                                        CompactButton {
+                                            width: 62px;
+                                            text: "Process";
+                                            enabled: !root.operation-busy && root.rendezvous-input != "";
+                                            clicked => {
+                                                root.submit-rendezvous-input(root.selected-session, root.rendezvous-input);
+                                            }
+                                        }
+                                        CompactButton {
+                                            width: 52px;
+                                            text: "Clear";
+                                            enabled: !root.operation-busy;
+                                            clicked => { root.rendezvous-input = ""; }
+                                        }
+                                    }
+
+                                    if root.rendezvous-visible && root.rendezvous-output != "": HorizontalLayout {
+                                        height: 32px;
+                                        spacing: 6px;
+                                        Text {
+                                            width: 62px;
+                                            text: root.rendezvous-output-label;
+                                            color: #87959a;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                        LineEdit {
+                                            text: root.rendezvous-output;
+                                            read-only: true;
+                                        }
+                                        CompactButton {
+                                            width: 52px;
+                                            text: "Copy";
+                                            enabled: !root.operation-busy;
+                                            clicked => { root.copy-rendezvous-output(root.rendezvous-output); }
+                                        }
+                                    }
+
+                                    if root.connect-input-visible && root.sessions[root.selected-session].can-connect: HorizontalLayout {
+                                        height: 32px;
+                                        spacing: 6px;
+                                        LineEdit {
+                                            text <=> root.peer-address-input;
+                                            placeholder-text: "Peer b32 address";
+                                            read-only: root.sessions[root.selected-session].peer-pinned;
+                                            enabled: !root.operation-busy;
+                                            accepted(value) => {
+                                                root.connect-input-visible = false;
+                                                root.connect-session(root.selected-session, value);
+                                            }
+                                        }
+                                        CompactButton {
+                                            width: 44px;
+                                            text: "OK";
+                                            enabled: !root.operation-busy && root.peer-address-input != "";
+                                            clicked => {
+                                                root.connect-input-visible = false;
+                                                root.connect-session(root.selected-session, root.peer-address-input);
+                                            }
+                                        }
+                                        CompactButton {
+                                            width: 58px;
+                                            text: "Cancel";
+                                            enabled: !root.operation-busy;
+                                            clicked => { root.connect-input-visible = false; }
+                                        }
+                                    }
+
+                                    if root.sessions[root.selected-session].can-lock && root.lock-confirmation-visible: HorizontalLayout {
+                                        height: 32px;
+                                        spacing: 6px;
+                                        Text {
+                                            text: "Lock this verified peer?";
+                                            color: #d7e2e5;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                        CompactButton {
+                                            width: 44px;
+                                            text: "Yes";
+                                            enabled: !root.operation-busy;
+                                            clicked => {
+                                                root.lock-confirmation-visible = false;
+                                                root.lock-session(root.selected-session);
+                                            }
+                                        }
+                                        CompactButton {
+                                            width: 44px;
+                                            text: "No";
+                                            enabled: !root.operation-busy;
+                                            clicked => { root.lock-confirmation-visible = false; }
+                                        }
+                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    }
+                                }
+                            }
+                            }
+                        }
+                    }
+                    }
+                }
+                }
+
+                if root.context-inspector-side-by-side: Rectangle {
+                    x: 300px;
+                    width: 8px;
+                    height: parent.height;
+                    background: #151d21;
+                }
+
+                if root.context-inspector-side-by-side: Rectangle {
+                    x: 300px;
+                    width: 1px;
+                    height: parent.height;
+                    background: #344148;
+                }
+
+                if root.context-inspector-side-by-side: Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: workspace.x + root.context-inspector-width;
+                    height: parent.height;
+                    background: transparent;
+                    border-width: 1px;
+                    border-color: #344148;
+                    border-radius: 5px;
+                }
+            }
+
+            Rectangle {
+                height: 30px;
+                background: #151d21;
+                border-width: 1px;
+                border-color: #344148;
+                border-radius: 4px;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    Text {
+                        text: root.operation-status == "" ? root.runtime-status : root.operation-status;
+                        color: root.operation-status == "" ? #70c990 : #d7e2e5;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.vault-path;
+                        color: #6f8086;
+                        font-size: 11px;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.screen == 2 && root.original-viewer-visible: Rectangle {
+        background: #080c0ed9;
+
+        TouchArea {}
+
+        Rectangle {
+            x: 44px;
+            y: 36px;
+            width: parent.width - 88px;
+            height: parent.height - 72px;
+            background: #101619;
+            border-width: 1px;
+            border-color: #3d6972;
+            border-radius: 5px;
+
+            VerticalLayout {
+                padding: 10px;
+                spacing: 8px;
+                HorizontalLayout {
+                    height: 28px;
+                    spacing: 8px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.original-viewer-filename;
+                        color: #edf3f4;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    CommandButton {
+                        width: 64px;
+                        text: "Save";
+                        clicked => { root.save-original-image(); }
+                    }
+                    CommandButton {
+                        width: 64px;
+                        text: "Close";
+                        clicked => { root.close-original-viewer(); }
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: #0a1013;
+                    border-width: 1px;
+                    border-color: #2b3940;
+                    border-radius: 3px;
+                    clip: true;
+                    Image {
+                        x: 6px;
+                        y: 6px;
+                        width: parent.width - 12px;
+                        height: parent.height - 12px;
+                        source: root.original-viewer-image;
+                        image-fit: contain;
+                    }
+                }
+                HorizontalLayout {
+                    height: 22px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.original-viewer-detail;
+                        color: #87959a;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.original-viewer-status;
+                        color: #70c990;
+                        font-size: 10px;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+}

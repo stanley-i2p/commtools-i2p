@@ -1,0 +1,20 @@
+[package]
+name = "deskcomm-i2p"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[dependencies]
+arboard = { version = "3.6.1", default-features = false }
+commtools-core = { path = "../commtools-core" }
+commtools-runtime = { path = "../commtools-runtime" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+rfd = "0.15"
+slint = "=1.17.1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+zeroize = "1"
+
+[build-dependencies]
+lucide-slint = "=1.43.0"
+slint-build = "=1.17.1"

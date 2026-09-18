@@ -3111,15 +3111,15 @@ impl Workspace {
             );
             return;
         };
+        let is_group = matches!(&tab.key, ConversationKey::Group(_));
         let phase = match (&tab.phase, tab.contact_phase, tab.offline_mode) {
+            (ConversationPhase::Opening, _, _) if is_group => "Opening group session",
+            (ConversationPhase::Standby, _, _) if is_group => "Group session active",
+            (ConversationPhase::Closing, _, _) if is_group => "Closing group session",
+            (ConversationPhase::Failed(_), _, _) if is_group => "Group session failed",
             (ConversationPhase::Standby, _, Some(OfflineCoordinatorMode::Offline)) => "Offline",
             (ConversationPhase::Standby, Some(contact_phase), _) => {
                 contact_phase_label(contact_phase)
-            }
-            (ConversationPhase::Standby, None, _)
-                if matches!(&tab.key, ConversationKey::Group(_)) =>
-            {
-                "Online"
             }
             (ConversationPhase::Idle, _, _) => "Not started",
             (ConversationPhase::Opening, _, _) => "Opening SAM session",

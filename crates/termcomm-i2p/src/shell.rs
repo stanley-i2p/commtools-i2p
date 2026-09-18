@@ -20,8 +20,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use std::io;
-use std::path::PathBuf;
-use tui_file_explorer::{ExplorerOutcome, FileExplorer};
+use std::path::{Path, PathBuf};
+use tui_file_explorer::{ExplorerOutcome, FileExplorer, Theme};
 use tui_tabs::TabNav;
 use zeroize::Zeroizing;
 
@@ -241,6 +241,7 @@ enum GroupBrowserAction {
     NewGroup,
     OpenGroup,
     LocalName,
+    ToggleHistory,
     ClearHistory,
     GeneratePublicInvite,
     CopyPublicInvite,
@@ -256,10 +257,11 @@ enum GroupBrowserAction {
 }
 
 impl GroupBrowserAction {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::NewGroup,
         Self::OpenGroup,
         Self::LocalName,
+        Self::ToggleHistory,
         Self::ClearHistory,
         Self::GeneratePublicInvite,
         Self::CopyPublicInvite,
@@ -279,6 +281,7 @@ impl GroupBrowserAction {
             Self::NewGroup => "New group",
             Self::OpenGroup => "Open group",
             Self::LocalName => "Set local member name",
+            Self::ToggleHistory => "Toggle history",
             Self::ClearHistory => "Clear history",
             Self::GeneratePublicInvite => "Generate public invite",
             Self::CopyPublicInvite => "Copy public invite",
@@ -494,6 +497,18 @@ impl FileChooserState {
     }
 }
 
+fn termcomm_file_chooser_theme() -> Theme {
+    Theme::default()
+        .brand(Color::Cyan)
+        .accent(Color::Cyan)
+        .success(Color::Green)
+        .dim(Color::DarkGray)
+        .fg(Color::White)
+        .sel_bg(Color::DarkGray)
+        .dir(Color::Cyan)
+        .match_file(Color::Green)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TrustConfirmation {
     Lock {
@@ -555,6 +570,7 @@ enum GroupConfirmation {
 }
 
 pub struct ShellState {
+    vault_root: PathBuf,
     section: Section,
     root_navigation: RootNavigationTarget,
     selected_contact_item: Option<ContactBrowserItem>,
@@ -596,8 +612,9 @@ pub struct ShellState {
 }
 
 impl ShellState {
-    pub fn new(driver: &ApplicationDriver) -> Self {
+    pub fn new(driver: &ApplicationDriver, vault_root: &Path) -> Self {
         let mut state = Self {
+            vault_root: vault_root.to_path_buf(),
             section: Section::Contacts,
             root_navigation: RootNavigationTarget::Contacts,
             selected_contact_item: None,
@@ -1020,7 +1037,12 @@ impl ShellState {
                             ),
                         chooser_sections[0],
                     );
-                    tui_file_explorer::render(&mut chooser.explorer, frame, chooser_sections[1]);
+                    tui_file_explorer::render_themed(
+                        &mut chooser.explorer,
+                        frame,
+                        chooser_sections[1],
+                        &termcomm_file_chooser_theme(),
+                    );
                 } else {
                     self.workspace.render_active(frame, sections[1], driver);
                 }
@@ -1532,7 +1554,9 @@ impl ShellState {
             }
             SettingsAction::ExportBackup => {
                 self.settings_input = Some(SettingsInput::ExportBackup {
-                    path: "termcomm-i2p-backup.ctbak".into(),
+                    path: sibling_export_path(&self.vault_root, "-backup.ctbak")
+                        .display()
+                        .to_string(),
                     passphrase: Zeroizing::new(String::new()),
                     include_files: true,
                     field: BackupInputField::Path,
@@ -1543,7 +1567,9 @@ impl ShellState {
             }
             SettingsAction::RestoreBackup => {
                 self.settings_input = Some(SettingsInput::RestoreBackup {
-                    path: "termcomm-i2p-backup.ctbak".into(),
+                    path: sibling_export_path(&self.vault_root, "-backup.ctbak")
+                        .display()
+                        .to_string(),
                     passphrase: Zeroizing::new(String::new()),
                     restore_files: true,
                     field: BackupInputField::Path,
@@ -1900,7 +1926,12 @@ impl ShellState {
                 contact_id: contact.id.clone(),
                 display_name: contact.display_name.clone(),
             },
-            path: format!("termcomm-contact-{}.ctcontact", contact.id),
+            path: sibling_export_path(
+                &self.vault_root,
+                &format!("-contact-{}.ctcontact", contact.id),
+            )
+            .display()
+            .to_string(),
             passphrase: Zeroizing::new(String::new()),
             include_history: true,
             field: BackupInputField::Path,
@@ -1912,7 +1943,9 @@ impl ShellState {
     fn begin_contact_backup_import(&mut self) {
         self.contact_backup_input = Some(ContactBackupInput {
             operation: ContactBackupOperation::Import,
-            path: "termcomm-contact.ctcontact".into(),
+            path: sibling_export_path(&self.vault_root, "-contact.ctcontact")
+                .display()
+                .to_string(),
             passphrase: Zeroizing::new(String::new()),
             include_history: false,
             field: BackupInputField::Path,
@@ -2263,6 +2296,7 @@ impl ShellState {
             GroupBrowserAction::NewGroup => self.begin_new_group(),
             GroupBrowserAction::OpenGroup => self.open_selected(driver),
             GroupBrowserAction::LocalName => self.begin_group_name_input(driver),
+            GroupBrowserAction::ToggleHistory => self.toggle_selected_history(driver),
             GroupBrowserAction::ClearHistory => self.begin_group_history_clear(driver),
             GroupBrowserAction::GeneratePublicInvite => self.generate_public_group_invite(driver),
             GroupBrowserAction::CopyPublicInvite => self.copy_generated_public_invite(),
@@ -5297,6 +5331,18 @@ fn detail_line(label: &str, value: &str) -> Line<'static> {
     ])
 }
 
+fn sibling_export_path(vault_root: &Path, suffix: &str) -> PathBuf {
+    let mut filename = vault_root
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new(".termcomm-i2p"))
+        .to_os_string();
+    filename.push(suffix);
+    vault_root
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(filename)
+}
+
 fn backup_input_display(
     path: &str,
     passphrase: &str,
@@ -5507,8 +5553,22 @@ mod tests {
     }
 
     #[test]
-    fn group_action_catalog_exposes_history_clear() {
-        assert_eq!(GroupBrowserAction::ALL.len(), 15);
+    fn export_defaults_are_siblings_of_the_vault_root() {
+        let vault_root = Path::new("secure-device").join(".termcomm-i2p");
+        assert_eq!(
+            sibling_export_path(&vault_root, "-backup.ctbak"),
+            Path::new("secure-device").join(".termcomm-i2p-backup.ctbak")
+        );
+        assert_eq!(
+            sibling_export_path(&vault_root, "-contact-alice.ctcontact"),
+            Path::new("secure-device").join(".termcomm-i2p-contact-alice.ctcontact")
+        );
+    }
+
+    #[test]
+    fn group_action_catalog_exposes_history_controls() {
+        assert_eq!(GroupBrowserAction::ALL.len(), 16);
+        assert!(GroupBrowserAction::ALL.contains(&GroupBrowserAction::ToggleHistory));
         assert!(GroupBrowserAction::ALL.contains(&GroupBrowserAction::ClearHistory));
     }
 

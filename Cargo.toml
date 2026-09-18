@@ -2,6 +2,7 @@
 members = [
     "crates/commtools-core",
     "crates/commtools-runtime",
+    "crates/deskcomm-i2p",
     "crates/termcomm-i2p",
 ]
 resolver = "3"

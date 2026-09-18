@@ -100,7 +100,7 @@ async fn run_shell(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut animation_tick = tokio::time::interval(Duration::from_millis(125));
     animation_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut shell = ShellState::new(driver);
+    let mut shell = ShellState::new(driver, &options.data_dir);
     draw_shell(terminal, &mut shell, driver, options)?;
 
     loop {

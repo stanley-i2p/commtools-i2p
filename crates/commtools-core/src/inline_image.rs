@@ -1,6 +1,7 @@
 use crate::protocol::{Frame, MessageType};
 use base64::{Engine as _, engine::general_purpose};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use thiserror::Error;
 
 pub const INLINE_IMAGE_TRANSFER_MAX_BYTES: usize = 50 * 1_024 * 1_024;
@@ -246,6 +247,8 @@ pub struct InlineImage {
 #[derive(Debug, Clone, Default)]
 pub struct InlineImageReceiver {
     incoming: Option<IncomingImage>,
+    discarding_transfer: Option<u64>,
+    cancelled_originals: BTreeSet<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +262,28 @@ struct IncomingImage {
 impl InlineImageReceiver {
     pub fn reset(&mut self) {
         self.incoming = None;
+        self.discarding_transfer = None;
+        self.cancelled_originals.clear();
+    }
+
+    pub fn cancel_original(&mut self, media_id: u64) -> bool {
+        self.cancelled_originals.insert(media_id);
+        let cancelled_transfer = self.incoming.as_ref().and_then(|image| {
+            (image.header.kind == ImageTransferKind::Original && image.header.media_id == media_id)
+                .then_some(image.transfer_id)
+        });
+        if let Some(transfer_id) = cancelled_transfer {
+            self.discarding_transfer = Some(transfer_id);
+            self.incoming = None;
+            self.cancelled_originals.remove(&media_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn allow_original(&mut self, media_id: u64) {
+        self.cancelled_originals.remove(&media_id);
     }
 
     pub fn active_transfer(&self) -> Option<(u64, &ImageTransferHeader, u64)> {
@@ -268,6 +293,21 @@ impl InlineImageReceiver {
     }
 
     pub fn receive(&mut self, frame: &Frame) -> Result<Option<InlineImage>, InlineImageError> {
+        if let Some(transfer_id) = self.discarding_transfer {
+            if frame.message_id == transfer_id {
+                match frame.message_type {
+                    MessageType::G => return Ok(None),
+                    MessageType::Z => {
+                        self.discarding_transfer = None;
+                        return Ok(None);
+                    }
+                    _ => {}
+                }
+            }
+            if frame.message_type == MessageType::J {
+                self.discarding_transfer = None;
+            }
+        }
         match frame.message_type {
             MessageType::J => self.receive_header(frame),
             MessageType::G => self.receive_chunk(frame),
@@ -277,10 +317,18 @@ impl InlineImageReceiver {
     }
 
     fn receive_header(&mut self, frame: &Frame) -> Result<Option<InlineImage>, InlineImageError> {
-        self.reset();
+        self.incoming = None;
+        self.discarding_transfer = None;
         let header =
             std::str::from_utf8(&frame.payload).map_err(|_| InlineImageError::InvalidHeader)?;
         let header = decode_compatible_header(header, frame.message_id)?;
+        if header.kind == ImageTransferKind::Original
+            && self.cancelled_originals.remove(&header.media_id)
+        {
+            self.incoming = None;
+            self.discarding_transfer = Some(frame.message_id);
+            return Ok(None);
+        }
         let expected = usize::try_from(header.total_bytes)
             .map_err(|_| InlineImageError::InvalidSize(usize::MAX))?;
         if expected == 0 || expected > INLINE_IMAGE_TRANSFER_MAX_BYTES {
@@ -668,5 +716,76 @@ mod tests {
         assert_eq!(received.header.media_id, 77);
         assert_eq!(received.header.kind, ImageTransferKind::Original);
         assert_eq!(received.bytes, bytes);
+    }
+
+    #[test]
+    fn cancelled_original_drains_buffered_frames_and_allows_the_next_image() {
+        let mut original = b"\x89PNG\r\n\x1a\n".to_vec();
+        original.extend(std::iter::repeat_n(0x5a, INLINE_IMAGE_CHUNK_BYTES * 2));
+        let metadata = OriginalImageMetadata::new(
+            original.len() as u64,
+            "image/png",
+            image_sha256_hex(&original),
+        )
+        .expect("metadata");
+        let header = ImageTransferHeader {
+            filename: "original.png".into(),
+            mime: "image/png".into(),
+            total_bytes: original.len() as u64,
+            kind: ImageTransferKind::Original,
+            media_id: 77,
+            original: Some(metadata),
+        };
+        let frames = inline_image_frames_with_header(88, &header, &original).expect("frames");
+        let mut receiver = InlineImageReceiver::default();
+        receiver.receive(&frames[0]).expect("original header");
+        receiver.receive(&frames[1]).expect("first original chunk");
+
+        assert!(receiver.cancel_original(77));
+        for frame in frames[2..]
+            .iter()
+            .filter(|frame| frame.message_type == MessageType::G)
+        {
+            assert_eq!(
+                receiver.receive(frame).expect("drain cancelled frame"),
+                None
+            );
+        }
+
+        let preview = b"\x89PNG\r\n\x1a\nnext preview";
+        let preview_frames =
+            inline_image_frames(99, "preview.png", "image/png", preview).expect("preview frames");
+        let mut received = None;
+        for frame in &preview_frames {
+            received = receiver
+                .receive(frame)
+                .expect("receive preview")
+                .or(received);
+        }
+        assert_eq!(received.expect("completed preview").bytes, preview);
+    }
+
+    #[test]
+    fn original_cancelled_before_its_header_is_drained_on_arrival() {
+        let bytes = b"\x89PNG\r\n\x1a\nlate original";
+        let metadata =
+            OriginalImageMetadata::new(bytes.len() as u64, "image/png", image_sha256_hex(bytes))
+                .expect("metadata");
+        let header = ImageTransferHeader {
+            filename: "late.png".into(),
+            mime: "image/png".into(),
+            total_bytes: bytes.len() as u64,
+            kind: ImageTransferKind::Original,
+            media_id: 177,
+            original: Some(metadata),
+        };
+        let frames = inline_image_frames_with_header(188, &header, bytes).expect("frames");
+        let mut receiver = InlineImageReceiver::default();
+
+        assert!(!receiver.cancel_original(177));
+        for frame in &frames {
+            assert_eq!(receiver.receive(frame).expect("drain late frame"), None);
+        }
+        assert!(receiver.active_transfer().is_none());
     }
 }

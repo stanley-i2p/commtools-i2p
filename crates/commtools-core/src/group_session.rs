@@ -330,6 +330,7 @@ struct GroupPeer {
     heartbeat_last_rx_ms: u64,
     heartbeat_last_ping_ms: u64,
     incoming_image: Option<IncomingImage>,
+    discarding_image_transfer: Option<u64>,
 }
 
 impl GroupPeer {
@@ -345,6 +346,7 @@ impl GroupPeer {
             heartbeat_last_rx_ms: 0,
             heartbeat_last_ping_ms: 0,
             incoming_image: None,
+            discarding_image_transfer: None,
         }
     }
 
@@ -356,6 +358,7 @@ impl GroupPeer {
         self.heartbeat_last_rx_ms = 0;
         self.heartbeat_last_ping_ms = 0;
         self.incoming_image = None;
+        self.discarding_image_transfer = None;
     }
 }
 
@@ -368,6 +371,7 @@ pub struct GroupSession {
     next_attempt_id: u64,
     next_control_message_id: u64,
     pending_original_images: BTreeSet<(String, u64)>,
+    cancelled_original_images: BTreeSet<(String, u64)>,
 }
 
 impl GroupSession {
@@ -381,6 +385,7 @@ impl GroupSession {
         Self {
             next_control_message_id: config.control_message_seed,
             pending_original_images: BTreeSet::new(),
+            cancelled_original_images: BTreeSet::new(),
             config,
             peers,
             deliveries: BTreeMap::new(),
@@ -935,14 +940,30 @@ impl GroupSession {
         let payload = peer.crypto.seal(&control.encode()?)?;
         match control {
             OriginalImageControl::Request(media_id) => {
+                self.cancelled_original_images
+                    .remove(&(peer_b32.clone(), media_id));
                 self.pending_original_images
                     .insert((peer_b32.clone(), media_id));
             }
             OriginalImageControl::Cancel(media_id) => {
                 self.pending_original_images
                     .remove(&(peer_b32.clone(), media_id));
-                if let Some(peer) = self.peers.get_mut(&peer_b32) {
-                    peer.incoming_image = None;
+                self.cancelled_original_images
+                    .insert((peer_b32.clone(), media_id));
+                let cancelled_transfer = self.peers.get(&peer_b32).and_then(|peer| {
+                    peer.incoming_image.as_ref().and_then(|image| {
+                        (image.header.kind == ImageTransferKind::Original
+                            && image.header.media_id == media_id)
+                            .then_some(image.transfer_id)
+                    })
+                });
+                if let Some(transfer_id) = cancelled_transfer {
+                    self.cancelled_original_images
+                        .remove(&(peer_b32.clone(), media_id));
+                    if let Some(peer) = self.peers.get_mut(&peer_b32) {
+                        peer.incoming_image = None;
+                        peer.discarding_image_transfer = Some(transfer_id);
+                    }
                 }
             }
             OriginalImageControl::Unavailable(_) => {}
@@ -1198,6 +1219,7 @@ impl GroupSession {
         peer.heartbeat_last_rx_ms = 0;
         peer.heartbeat_last_ping_ms = 0;
         peer.incoming_image = None;
+        peer.discarding_image_transfer = None;
         peer.connection = Some(GroupConnection {
             id: connection_id,
             direction,
@@ -1539,6 +1561,15 @@ impl GroupSession {
             return;
         }
         if header.kind == ImageTransferKind::Original
+            && self
+                .cancelled_original_images
+                .remove(&(peer.member.b32.clone(), header.media_id))
+        {
+            peer.incoming_image = None;
+            peer.discarding_image_transfer = Some(frame.message_id);
+            return;
+        }
+        if header.kind == ImageTransferKind::Original
             && !self
                 .pending_original_images
                 .contains(&(peer.member.b32.clone(), header.media_id))
@@ -1546,6 +1577,7 @@ impl GroupSession {
             reject_image(peer, "unsolicited group original image", output);
             return;
         }
+        peer.discarding_image_transfer = None;
         peer.incoming_image = Some(IncomingImage {
             header,
             expected: size,
@@ -1560,6 +1592,16 @@ impl GroupSession {
         frame: Frame,
         output: &mut GroupSessionOutput,
     ) {
+        if peer.discarding_image_transfer == Some(frame.message_id) {
+            if peer.crypto.open(&frame.payload).is_err() {
+                reject_image(
+                    peer,
+                    "discarded group image chunk authentication failed",
+                    output,
+                );
+            }
+            return;
+        }
         let Some(image) = peer.incoming_image.as_mut() else {
             reject_image(peer, "group image chunk arrived without a header", output);
             return;
@@ -1607,6 +1649,10 @@ impl GroupSession {
         frame: Frame,
         output: &mut GroupSessionOutput,
     ) {
+        if peer.discarding_image_transfer == Some(frame.message_id) {
+            peer.discarding_image_transfer = None;
+            return;
+        }
         let Some(image) = peer.incoming_image.take() else {
             reject_image(peer, "group image end arrived without a header", output);
             return;
@@ -1667,6 +1713,8 @@ impl GroupSession {
     ) {
         self.pending_original_images
             .retain(|(pending_peer, _)| pending_peer != peer_b32);
+        self.cancelled_original_images
+            .retain(|(cancelled_peer, _)| cancelled_peer != peer_b32);
         if let Some(attempt) = peer.connect_attempt.take() {
             output.actions.push(GroupSessionAction::CancelConnect {
                 attempt_id: attempt.id,
@@ -1716,6 +1764,7 @@ impl GroupSession {
 
 fn reject_image(peer: &mut GroupPeer, reason: &str, output: &mut GroupSessionOutput) {
     peer.incoming_image = None;
+    peer.discarding_image_transfer = None;
     output.events.push(GroupSessionEvent::FrameRejected {
         peer_b32: peer.member.b32.clone(),
         reason: reason.into(),

@@ -493,6 +493,81 @@ fn requested_group_original_is_targeted_and_digest_validated() {
 }
 
 #[test]
+fn cancelled_group_original_drains_residual_chunks_before_the_next_preview() {
+    let (mut alice, mut bob, alice_connection, bob_connection, ready_at) = ready_pair();
+    let alice_b32 = destination_to_b32(ALICE_DESTINATION).expect("alice b32");
+    let bob_b32 = destination_to_b32(BOB_DESTINATION).expect("bob b32");
+    let mut original = b"\x89PNG\r\n\x1a\n".to_vec();
+    original.extend(std::iter::repeat_n(0x5a, 9_000));
+    let metadata = OriginalImageMetadata::new(
+        original.len() as u64,
+        "image/png",
+        image_sha256_hex(&original),
+    )
+    .expect("metadata");
+
+    bob.send_original_image_control(&alice_b32, 910, OriginalImageControl::Request(88))
+        .expect("register original request");
+    let header = ImageTransferHeader {
+        filename: "original.png".into(),
+        mime: "image/png".into(),
+        total_bytes: original.len() as u64,
+        kind: ImageTransferKind::Original,
+        media_id: 88,
+        original: Some(metadata),
+    };
+    let frames = alice
+        .send_image_to_peer(&bob_b32, 911, &header, &original)
+        .expect("send original")
+        .actions
+        .into_iter()
+        .find_map(|action| match action {
+            GroupSessionAction::SendOriginalImage { frames, .. } => Some(frames),
+            _ => None,
+        })
+        .expect("original frames");
+    bob.receive_frame(bob_connection, frames[0].clone(), ready_at + 1);
+    bob.receive_frame(bob_connection, frames[1].clone(), ready_at + 2);
+
+    bob.send_original_image_control(&alice_b32, 912, OriginalImageControl::Cancel(88))
+        .expect("cancel original");
+    for frame in frames[2..]
+        .iter()
+        .filter(|frame| frame.message_type == MessageType::G)
+    {
+        let output = bob.receive_frame(bob_connection, frame.clone(), ready_at + 3);
+        assert!(output.events.is_empty());
+    }
+
+    let preview = b"\x89PNG\r\n\x1a\nnext preview".to_vec();
+    let preview_frames = alice
+        .send_image(913, "preview.png", "image/png", &preview)
+        .expect("send preview")
+        .actions
+        .into_iter()
+        .find_map(|action| match action {
+            GroupSessionAction::SendFrames {
+                connection_id,
+                frames,
+            } if connection_id == alice_connection => Some(frames),
+            _ => None,
+        })
+        .expect("preview frames");
+    let mut received = None;
+    for frame in preview_frames {
+        for event in bob
+            .receive_frame(bob_connection, frame, ready_at + 4)
+            .events
+        {
+            if let GroupSessionEvent::ImageReceived { kind, bytes, .. } = event {
+                received = Some((kind, bytes));
+            }
+        }
+    }
+    assert_eq!(received, Some((ImageTransferKind::Preview, preview)));
+}
+
+#[test]
 fn collision_rule_and_handshake_timeout_are_per_peer() {
     let alice_b32 = destination_to_b32(ALICE_DESTINATION).expect("alice b32");
     let bob_b32 = destination_to_b32(BOB_DESTINATION).expect("bob b32");
