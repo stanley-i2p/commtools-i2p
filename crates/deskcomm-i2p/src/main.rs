@@ -1,10 +1,16 @@
 #![deny(unsafe_code)]
 
+//! Slint desktop shell for CommTools.
+//!
+//! This crate translates UI intent into typed runtime commands and renders snapshots/events. It
+//! does not drive protocol authorization and other decisions and does not directly own SAM and vault resources.
+
 mod backend;
 mod cli;
 mod image_media;
+mod vault_animation;
 
-use arboard::Clipboard;
+use arboard::{Clipboard, Error as ClipboardError};
 use backend::{BackendCommand, BackendEvent, BackendHandle, BackendSender};
 use cli::{ParseOutcome, StartupOptions};
 use commtools_core::group_roster::{MAX_PUBLIC_INVITE_BYTES, PUBLIC_INVITE_PREFIX};
@@ -28,9 +34,12 @@ use commtools_runtime::{
     SamMonitorStatus, SamTestStatus, SessionLifecycleEvent, TextDeliveryEvent, TextReceivedEvent,
     TextSendResult,
 };
-use image_media::{PreparedImage, prepare_image_path, slint_image_from_bytes};
+use image_media::{
+    PreparedImage, prepare_clipboard_image, prepare_image_path, slint_image_from_bytes,
+};
 use slint::{
-    CloseRequestResponse, ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel,
+    CloseRequestResponse, ComponentHandle, Image as SlintImage, Model, ModelRc, SharedString,
+    Timer, TimerMode, VecModel,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -46,6 +55,7 @@ use zeroize::Zeroizing;
 slint::include_modules!();
 
 const UI_EVENT_INTERVAL: Duration = Duration::from_millis(50);
+const ATTENTION_PULSE_INTERVAL_TICKS: u8 = 8;
 const MAX_PRESENTED_TEXT_MESSAGES: usize = 5_000;
 const TEXT_BUBBLE_MAX_WIDTH: f32 = 460.0;
 const TEXT_BUBBLE_MIN_BODY_WIDTH: f32 = 92.0;
@@ -180,6 +190,15 @@ struct PresentedOriginalImage {
     bytes: Vec<u8>,
 }
 
+struct PendingPastedImage {
+    // Clipboard pixels are converted to a limited preview + a full-resolution PNG.
+
+    prepared: PreparedImage,
+    preview: SlintImage,
+    width: u32,
+    height: u32,
+}
+
 #[derive(Debug, Clone)]
 struct OriginalImageTarget {
     session_id: SessionId,
@@ -281,6 +300,51 @@ enum TofuPresentationState {
     Mismatch,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct SessionAttention {
+    unread_content: bool,
+    incoming_call: bool,
+    incoming_call_handled: bool,
+    missed_calls: u32,
+}
+
+impl SessionAttention {
+    fn start_incoming_call(&mut self) {
+        self.incoming_call = true;
+        self.incoming_call_handled = false;
+    }
+
+    fn handle_incoming_call(&mut self) {
+        self.incoming_call = true;
+        self.incoming_call_handled = true;
+    }
+
+    fn change_contact_phase(&mut self, phase: OneToOnePhase) {
+        if phase == OneToOnePhase::IncomingPending {
+            self.incoming_call = true;
+            return;
+        }
+        if !self.incoming_call {
+            return;
+        }
+        if !self.incoming_call_handled
+            && matches!(
+                phase,
+                OneToOnePhase::Standby | OneToOnePhase::Closing | OneToOnePhase::Closed
+            )
+        {
+            self.missed_calls = self.missed_calls.saturating_add(1);
+        }
+        self.incoming_call = false;
+        self.incoming_call_handled = false;
+    }
+
+    fn mark_viewed(&mut self) {
+        self.unread_content = false;
+        self.missed_calls = 0;
+    }
+}
+
 #[derive(Default)]
 struct UiMappings {
     contacts: RefCell<Vec<ContactId>>,
@@ -299,9 +363,11 @@ struct UiMappings {
     pending_transient_label: RefCell<Option<String>>,
     session_keys: RefCell<BTreeMap<SessionId, ManagedSessionKey>>,
     contact_tofu_states: RefCell<BTreeMap<SessionId, TofuPresentationState>>,
+    session_attention: RefCell<BTreeMap<SessionId, SessionAttention>>,
     offline_activities: RefCell<BTreeMap<SessionId, OfflineActivityPresentation>>,
     conversations: RefCell<BTreeMap<SessionId, Vec<PresentedMessage>>>,
     reply_drafts: RefCell<BTreeMap<SessionId, ReplyDraft>>,
+    pasted_images: RefCell<BTreeMap<SessionId, PendingPastedImage>>,
     session_logs: RefCell<BTreeMap<SessionId, VecDeque<SessionLogEntry>>>,
     open_log_panels: RefCell<BTreeSet<SessionId>>,
     original_viewer: RefCell<Option<PresentedOriginalImage>>,
@@ -361,8 +427,10 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
     let mappings = Rc::new(UiMappings::default());
     let clipboard = Rc::new(RefCell::new(None));
 
+    ui.set_application_title(format!("DeskComm-I2P {}", env!("CARGO_PKG_VERSION")).into());
     ui.set_screen(if vault_exists { 0 } else { 1 });
     ui.set_vault_path(options.data_dir.display().to_string().into());
+    let vault_animation = Rc::new(vault_animation::start(&ui));
 
     let copy_address_ui = ui.as_weak();
     let copy_address_clipboard = clipboard.clone();
@@ -720,15 +788,15 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                     clear_settings_data_secrets(&ui);
                     ui.set_operation_busy(true);
                     ui.set_operation_status("Inspecting encrypted contact backup...".into());
-                    let pending = submit_data_mappings.pending_contact_import.borrow();
-                    let pending = pending.as_ref().expect("pending import was just stored");
-                    if let Err(error) = submit_data_sender.send(BackendCommand::Runtime(
-                        CommToolsCommand::InspectContactBackup {
+                    let command = {
+                        let pending = submit_data_mappings.pending_contact_import.borrow();
+                        let pending = pending.as_ref().expect("pending import was just stored");
+                        BackendCommand::Runtime(CommToolsCommand::InspectContactBackup {
                             path: pending.path.clone(),
                             passphrase: pending.passphrase.clone(),
-                        },
-                    )) {
-                        drop(pending);
+                        })
+                    };
+                    if let Err(error) = submit_data_sender.send(command) {
                         submit_data_mappings.pending_contact_import.borrow_mut().take();
                         ui.set_operation_busy(false);
                         ui.set_operation_status(error.into());
@@ -896,7 +964,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
             ui.set_operation_status("Select a valid contact".into());
             return;
         };
-        if focus_catalog_session(&ui, &open_mappings, &entry) {
+        if focus_catalog_session(&ui, &open_mappings, &open_sender, &entry) {
             ui.set_operation_status("Focused existing conversation".into());
             return;
         }
@@ -1509,7 +1577,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
             return;
         };
         ui.set_operation_busy(true);
-        ui.set_operation_status("Deleting local group data...".into());
+        ui.set_operation_status("Deleting group locally...".into());
         if let Err(error) =
             delete_group_sender.send(BackendCommand::Runtime(CommToolsCommand::DeleteGroup {
                 group_id,
@@ -1670,22 +1738,16 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         let Some(ui) = toggle_rendezvous_ui.upgrade() else {
             return;
         };
+        if ui.get_rendezvous_visible() {
+            close_rendezvous_panel(&ui, &toggle_rendezvous_mappings);
+            return;
+        }
         let Some(session_id) = rendezvous_session_at(&toggle_rendezvous_mappings, index) else {
             ui.set_operation_status(
                 "Rendezvous requires an unlocked 1:1 session in online standby".into(),
             );
             return;
         };
-        if toggle_rendezvous_mappings
-            .rendezvous_panel_session
-            .borrow()
-            .as_ref()
-            == Some(&session_id)
-            && ui.get_rendezvous_visible()
-        {
-            close_rendezvous_panel(&ui, &toggle_rendezvous_mappings);
-            return;
-        }
         show_rendezvous_panel(&ui, &toggle_rendezvous_mappings, session_id);
     });
 
@@ -1717,7 +1779,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
     let submit_rendezvous_sender = backend.sender();
     let submit_rendezvous_ui = ui.as_weak();
     let submit_rendezvous_mappings = mappings.clone();
-    ui.on_submit_rendezvous_input(move |index, encoded| {
+    ui.on_submit_rendezvous_input(move |index, encoded, answer_mode| {
         let Some(ui) = submit_rendezvous_ui.upgrade() else {
             return;
         };
@@ -1729,8 +1791,8 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
             ui.set_operation_status("Paste valid bounded rendezvous material".into());
             return;
         };
-        let (kind, status, command) = match rendezvous_input_kind(&encoded) {
-            RendezvousInputKind::Request => (
+        let (kind, status, command) = match (answer_mode, rendezvous_input_kind(&encoded)) {
+            (true, RendezvousInputKind::Request) => (
                 PendingRendezvousCommandKind::AnswerRequest,
                 "Answering rendezvous request...",
                 CommToolsCommand::AnswerContactRendezvousRequest {
@@ -1738,7 +1800,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                     encoded_request: encoded,
                 },
             ),
-            RendezvousInputKind::Response => (
+            (false, RendezvousInputKind::Response) => (
                 PendingRendezvousCommandKind::ConnectResponse,
                 "Connecting through rendezvous...",
                 CommToolsCommand::ConnectContactRendezvous {
@@ -1746,7 +1808,19 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                     encoded_response: encoded,
                 },
             ),
-            RendezvousInputKind::Unknown => {
+            (true, RendezvousInputKind::Response) => {
+                ui.set_operation_status(
+                    "Answer mode requires a rendezvous request received from the peer".into(),
+                );
+                return;
+            }
+            (false, RendezvousInputKind::Request) => {
+                ui.set_operation_status(
+                    "Initiate mode requires the peer's response to this session's request".into(),
+                );
+                return;
+            }
+            (_, RendezvousInputKind::Unknown) => {
                 ui.set_operation_status("Unrecognized rendezvous material".into());
                 return;
             }
@@ -1873,11 +1947,14 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         };
         ui.set_operation_busy(true);
         ui.set_operation_status("Accepting incoming call...".into());
-        if let Err(error) = accept_sender.send(BackendCommand::Runtime(
+        match accept_sender.send(BackendCommand::Runtime(
             CommToolsCommand::AcceptContactIncoming { session_id },
         )) {
-            ui.set_operation_busy(false);
-            ui.set_operation_status(error.into());
+            Ok(()) => mark_incoming_call_handled(&accept_mappings, session_id),
+            Err(error) => {
+                ui.set_operation_busy(false);
+                ui.set_operation_status(error.into());
+            }
         }
     });
 
@@ -1894,11 +1971,14 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         };
         ui.set_operation_busy(true);
         ui.set_operation_status("Declining incoming call...".into());
-        if let Err(error) = decline_sender.send(BackendCommand::Runtime(
+        match decline_sender.send(BackendCommand::Runtime(
             CommToolsCommand::DeclineContactIncoming { session_id },
         )) {
-            ui.set_operation_busy(false);
-            ui.set_operation_status(error.into());
+            Ok(()) => mark_incoming_call_handled(&decline_mappings, session_id),
+            Err(error) => {
+                ui.set_operation_busy(false);
+                ui.set_operation_status(error.into());
+            }
         }
     });
 
@@ -2011,6 +2091,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         }
     });
 
+    let select_session_sender = backend.sender();
     let select_session_ui = ui.as_weak();
     let select_session_mappings = mappings.clone();
     ui.on_select_session(move |index| {
@@ -2022,8 +2103,12 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         }
         close_rendezvous_panel(&ui, &select_session_mappings);
         ui.set_selected_session(index);
+        if let Some(session_id) = row_value(&select_session_mappings.sessions, index).flatten() {
+            mark_session_viewed(&select_session_mappings, session_id);
+        }
         ui.set_message_follow_bottom(true);
         ui.set_message_input("".into());
+        refresh_sessions_from_latest(&ui, &select_session_mappings, &select_session_sender);
         refresh_messages(&ui, &select_session_mappings);
     });
 
@@ -2149,6 +2234,141 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                 text: wire_text,
             }))
         {
+            ui.set_operation_busy(false);
+            ui.set_operation_status(error.into());
+        }
+    });
+
+    let paste_image_ui = ui.as_weak();
+    let paste_image_mappings = mappings.clone();
+    let paste_image_clipboard = clipboard.clone();
+    ui.on_paste_clipboard_image(move |index| {
+        let Some(ui) = paste_image_ui.upgrade() else {
+            return false;
+        };
+        let Some(session_id) = row_value(&paste_image_mappings.sessions, index).flatten() else {
+            return false;
+        };
+        let Some(session_key) = paste_image_mappings
+            .session_keys
+            .borrow()
+            .get(&session_id)
+            .cloned()
+        else {
+            return false;
+        };
+        let image = {
+            let mut clipboard = paste_image_clipboard.borrow_mut();
+            if clipboard.is_none() {
+                match Clipboard::new() {
+                    Ok(created) => *clipboard = Some(created),
+                    Err(error) => {
+                        ui.set_operation_status(
+                            format!("Clipboard image access failed: {error}").into(),
+                        );
+                        return false;
+                    }
+                }
+            }
+            match clipboard
+                .as_mut()
+                .expect("clipboard initialized above")
+                .get_image()
+            {
+                Ok(image) => image,
+                Err(ClipboardError::ContentNotAvailable) => return false,
+                Err(error) => {
+                    *clipboard = None;
+                    ui.set_operation_status(
+                        format!("Clipboard image access failed: {error}").into(),
+                    );
+                    return false;
+                }
+            }
+        };
+        let maximum_preview_bytes = if matches!(session_key, ManagedSessionKey::Group(_)) {
+            GROUP_IMAGE_TRANSFER_MAX_BYTES
+        } else {
+            commtools_core::INLINE_IMAGE_TRANSFER_MAX_BYTES
+        };
+        let prepared = match prepare_clipboard_image(
+            image.width,
+            image.height,
+            image.bytes.into_owned(),
+            maximum_preview_bytes,
+            current_epoch_millis(),
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                ui.set_operation_status(format!("Clipboard image rejected: {error}").into());
+                return true;
+            }
+        };
+        let preview = match slint_image_from_bytes(&prepared.bytes) {
+            Ok(preview) => preview,
+            Err(error) => {
+                ui.set_operation_status(format!("Clipboard image preview failed: {error}").into());
+                return true;
+            }
+        };
+        paste_image_mappings.pasted_images.borrow_mut().insert(
+            session_id,
+            PendingPastedImage {
+                prepared,
+                preview: preview.image,
+                width: preview.width,
+                height: preview.height,
+            },
+        );
+        refresh_pasted_image(&ui, &paste_image_mappings);
+        ui.set_operation_status("Clipboard image ready to send".into());
+        true
+    });
+
+    let cancel_pasted_image_ui = ui.as_weak();
+    let cancel_pasted_image_mappings = mappings.clone();
+    ui.on_cancel_pasted_image(move |index| {
+        let Some(ui) = cancel_pasted_image_ui.upgrade() else {
+            return;
+        };
+        let Some(session_id) = row_value(&cancel_pasted_image_mappings.sessions, index).flatten()
+        else {
+            return;
+        };
+        cancel_pasted_image_mappings
+            .pasted_images
+            .borrow_mut()
+            .remove(&session_id);
+        refresh_pasted_image(&ui, &cancel_pasted_image_mappings);
+        ui.set_operation_status("Pasted image cancelled".into());
+    });
+
+    let send_pasted_image_sender = backend.sender();
+    let send_pasted_image_ui = ui.as_weak();
+    let send_pasted_image_mappings = mappings.clone();
+    ui.on_send_pasted_image(move |index| {
+        let Some(ui) = send_pasted_image_ui.upgrade() else {
+            return;
+        };
+        let Some(session_id) = row_value(&send_pasted_image_mappings.sessions, index).flatten()
+        else {
+            ui.set_operation_status("Select a valid live chat session".into());
+            return;
+        };
+        let Some(pending) = send_pasted_image_mappings
+            .pasted_images
+            .borrow_mut()
+            .remove(&session_id)
+        else {
+            ui.set_operation_status("No pasted image is pending for this chat".into());
+            return;
+        };
+        refresh_pasted_image(&ui, &send_pasted_image_mappings);
+        ui.set_operation_busy(true);
+        ui.set_operation_status("Sending pasted image preview...".into());
+        if let Err(error) = send_pasted_image_sender.send(BackendCommand::Runtime(
+            image_send_command(session_id, pending.prepared),
+        )) {
             ui.set_operation_busy(false);
             ui.set_operation_status(error.into());
         }
@@ -2531,6 +2751,8 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
     let event_mappings = mappings.clone();
     let event_sender = backend.sender();
     let close_allowed_for_events = close_allowed.clone();
+    let vault_animation_for_events = vault_animation.clone();
+    let attention_pulse_ticks = Cell::new(0_u8);
     let event_timer = Timer::default();
     event_timer.start(TimerMode::Repeated, UI_EVENT_INTERVAL, move || {
         let Some(ui) = event_ui.upgrade() else {
@@ -2543,6 +2765,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                     ui.set_gate_error(error.into());
                 }
                 BackendEvent::Ready(snapshot) => {
+                    vault_animation_for_events.stop();
                     apply_snapshot(
                         &ui,
                         &event_mappings,
@@ -2615,6 +2838,32 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                 );
             }
         }
+        let has_incoming_call = event_mappings
+            .session_attention
+            .borrow()
+            .values()
+            .any(|attention| attention.incoming_call)
+            || event_mappings
+                .latest_snapshot
+                .borrow()
+                .as_ref()
+                .is_some_and(|snapshot| {
+                    snapshot.sessions.iter().any(|session| {
+                        session.one_to_one_phase == Some(OneToOnePhase::IncomingPending)
+                    })
+                });
+        if has_incoming_call {
+            let ticks = attention_pulse_ticks.get().saturating_add(1);
+            if ticks >= ATTENTION_PULSE_INTERVAL_TICKS {
+                attention_pulse_ticks.set(0);
+                ui.set_attention_pulse(!ui.get_attention_pulse());
+            } else {
+                attention_pulse_ticks.set(ticks);
+            }
+        } else {
+            attention_pulse_ticks.set(0);
+            ui.set_attention_pulse(true);
+        }
     });
 
     let run_result = ui.run();
@@ -2628,6 +2877,76 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
 enum ConversationRefresh {
     Preserve,
     Refresh,
+}
+
+fn selected_session_id(ui: &AppWindow, mappings: &UiMappings) -> Option<SessionId> {
+    row_value(&mappings.sessions, ui.get_selected_session()).flatten()
+}
+
+fn mark_session_unread(ui: &AppWindow, mappings: &UiMappings, session_id: SessionId) -> bool {
+    if selected_session_id(ui, mappings) == Some(session_id) {
+        return false;
+    }
+    let mut attention = mappings.session_attention.borrow_mut();
+    let attention = attention.entry(session_id).or_default();
+    if attention.unread_content {
+        return false;
+    }
+    attention.unread_content = true;
+    true
+}
+
+fn mark_session_viewed(mappings: &UiMappings, session_id: SessionId) {
+    if let Some(attention) = mappings.session_attention.borrow_mut().get_mut(&session_id) {
+        attention.mark_viewed();
+    }
+}
+
+fn mark_incoming_call_handled(mappings: &UiMappings, session_id: SessionId) {
+    mappings
+        .session_attention
+        .borrow_mut()
+        .entry(session_id)
+        .or_default()
+        .handle_incoming_call();
+}
+
+fn update_contact_attention(mappings: &UiMappings, event: &ContactSessionEvent) {
+    let (session_id, phase) = match event {
+        ContactSessionEvent::IncomingCall { session_id, .. } => {
+            mappings
+                .session_attention
+                .borrow_mut()
+                .entry(*session_id)
+                .or_default()
+                .start_incoming_call();
+            return;
+        }
+        ContactSessionEvent::PhaseChanged { session_id, phase } => (*session_id, *phase),
+        ContactSessionEvent::Disconnected { session_id, .. } => {
+            (*session_id, OneToOnePhase::Standby)
+        }
+        _ => return,
+    };
+    mappings
+        .session_attention
+        .borrow_mut()
+        .entry(session_id)
+        .or_default()
+        .change_contact_phase(phase);
+}
+
+fn refresh_sessions_from_latest(ui: &AppWindow, mappings: &UiMappings, sender: &BackendSender) {
+    let snapshot = mappings.latest_snapshot.borrow().clone();
+    if let Some(snapshot) = snapshot {
+        apply_snapshot(
+            ui,
+            mappings,
+            sender,
+            snapshot,
+            ConversationRefresh::Preserve,
+        );
+    }
 }
 
 fn apply_snapshot(
@@ -2668,6 +2987,10 @@ fn apply_snapshot(
         .collect::<BTreeSet<_>>();
     mappings
         .conversations
+        .borrow_mut()
+        .retain(|session_id, _| active_session_ids.contains(session_id));
+    mappings
+        .session_attention
         .borrow_mut()
         .retain(|session_id, _| active_session_ids.contains(session_id));
     mappings
@@ -2779,12 +3102,9 @@ fn apply_snapshot(
         };
         contact_catalog.push(ContactCatalogEntry::Transient(transient_id.clone()));
         contacts.push(CatalogItem {
-            title: format!(
-                "T  {}",
-                transient_title(
-                    transient_id,
-                    transient_labels.get(transient_id).map(String::as_str),
-                )
+            title: transient_title(
+                transient_id,
+                transient_labels.get(transient_id).map(String::as_str),
             )
             .into(),
             detail: "".into(),
@@ -2809,12 +3129,9 @@ fn apply_snapshot(
         }
         contact_catalog.push(ContactCatalogEntry::Transient(transient_id.clone()));
         contacts.push(CatalogItem {
-            title: format!(
-                "T  {}",
-                transient_title(
-                    transient_id,
-                    transient_labels.get(transient_id).map(String::as_str),
-                )
+            title: transient_title(
+                transient_id,
+                transient_labels.get(transient_id).map(String::as_str),
             )
             .into(),
             detail: "".into(),
@@ -2874,7 +3191,7 @@ fn apply_snapshot(
             .groups
             .iter()
             .find(|group| &group.id == selected)
-            .map(|group| (group.active, group.owner))
+            .map(|group| (group.active, group.owner, group.local_b32.is_some()))
     });
     let group_ids = snapshot
         .groups
@@ -2910,6 +3227,7 @@ fn apply_snapshot(
         .borrow_mut()
         .retain(|key| !live_keys.contains(key));
     let contact_tofu_states = mappings.contact_tofu_states.borrow().clone();
+    let session_attention = mappings.session_attention.borrow().clone();
     let offline_activities = mappings.offline_activities.borrow().clone();
     let rendezvous_authenticated = mappings.rendezvous_authenticated.borrow().clone();
 
@@ -2927,20 +3245,12 @@ fn apply_snapshot(
         .sessions
         .iter()
         .map(|session| {
-            let title = match &session.key {
-                ManagedSessionKey::Contact(contact_id) => contact_names
-                    .get(contact_id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Contact {contact_id}")),
-                ManagedSessionKey::Transient(transient_id) => transient_title(
-                    transient_id,
-                    transient_labels.get(transient_id).map(String::as_str),
-                ),
-                ManagedSessionKey::Group(group_id) => group_names
-                    .get(group_id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Group {group_id}")),
-            };
+            let title = session_title(
+                &session.key,
+                &contact_names,
+                &group_names,
+                &transient_labels,
+            );
             let offline = session.offline_mode == Some(OfflineCoordinatorMode::Offline);
             let (offline_activity, offline_activity_tone) = visible_offline_activity(
                 offline,
@@ -2994,6 +3304,10 @@ fn apply_snapshot(
                 .or_else(|| session.peer_b32.clone())
                 .unwrap_or_default();
             let phase = session.one_to_one_phase;
+            let attention = session_attention
+                .get(&session.session_id)
+                .copied()
+                .unwrap_or_default();
             let tofu_state = if offline {
                 0
             } else {
@@ -3069,6 +3383,10 @@ fn apply_snapshot(
                 history_enabled,
                 has_details: session_has_details(&session.key),
                 opening: false,
+                unread_content: attention.unread_content,
+                incoming_call: attention.incoming_call
+                    || phase == Some(OneToOnePhase::IncomingPending),
+                missed_calls: i32::try_from(attention.missed_calls).unwrap_or(i32::MAX),
             }
         })
         .collect::<Vec<_>>();
@@ -3128,6 +3446,9 @@ fn apply_snapshot(
             history_enabled,
             has_details,
             opening: true,
+            unread_content: false,
+            incoming_call: false,
+            missed_calls: 0,
         });
     }
 
@@ -3149,7 +3470,6 @@ fn apply_snapshot(
     *mappings.contacts.borrow_mut() = contact_ids;
     *mappings.contact_catalog.borrow_mut() = contact_catalog;
     *mappings.groups.borrow_mut() = group_ids;
-    *mappings.sessions.borrow_mut() = session_ids;
     *mappings.visible_session_keys.borrow_mut() = visible_session_keys;
 
     ui.set_contacts(model(contacts));
@@ -3168,6 +3488,19 @@ fn apply_snapshot(
     let selected_can_connect = effective_selected_session_index
         .and_then(|index| sessions.get(index as usize))
         .is_some_and(|session| session.can_connect);
+    let conversation_selection_changed =
+        selected_session_index.is_none() || selected_session_was_pending;
+    if conversation_selection_changed
+        && let Some(index) = effective_selected_session_index
+        && let Some(Some(session_id)) = session_ids.get(index as usize)
+    {
+        mark_session_viewed(mappings, *session_id);
+        if let Some(session) = sessions.get_mut(index as usize) {
+            session.unread_content = false;
+            session.missed_calls = 0;
+        }
+    }
+    *mappings.sessions.borrow_mut() = session_ids;
     let has_sessions = !sessions.is_empty();
     ui.set_sessions(session_model(sessions));
     ui.set_contacts_summary(contact_catalog_summary(contact_count, transient_count).into());
@@ -3183,8 +3516,13 @@ fn apply_snapshot(
     ));
     refresh_contact_details(ui, mappings, selected_contact.as_ref());
     ui.set_selected_group(selected_group_index);
-    ui.set_selected_group_active(selected_group_state.is_some_and(|(active, _)| active));
-    ui.set_selected_group_owner(selected_group_state.is_some_and(|(_, owner)| owner));
+    ui.set_selected_group_active(
+        selected_group_state.is_some_and(|(active, _, _)| active),
+    );
+    ui.set_selected_group_owner(selected_group_state.is_some_and(|(_, owner, _)| owner));
+    ui.set_selected_group_initialized(
+        selected_group_state.is_some_and(|(_, _, initialized)| initialized),
+    );
     refresh_group_details(ui, mappings, selected_group.as_ref());
     if !selected_contact_state.is_some_and(|(active, peer_pinned)| !active && peer_pinned) {
         ui.set_unlock_confirmation_visible(false);
@@ -3200,6 +3538,9 @@ fn apply_snapshot(
         ui.set_message_follow_bottom(true);
         ui.set_messages(message_model(Vec::new()));
         ui.set_message_input("".into());
+        ui.set_pasted_image_visible(false);
+        ui.set_pasted_image_preview(SlintImage::default());
+        ui.set_pasted_image_detail("".into());
         ui.set_reply_visible(false);
         ui.set_reply_author("".into());
         ui.set_reply_preview("".into());
@@ -3207,8 +3548,6 @@ fn apply_snapshot(
     } else {
         let selected_index = effective_selected_session_index.expect("sessions are not empty");
         ui.set_selected_session(selected_index);
-        let conversation_selection_changed =
-            selected_session_index.is_none() || selected_session_was_pending;
         if conversation_selection_changed {
             ui.set_message_follow_bottom(true);
             ui.set_message_input("".into());
@@ -3248,6 +3587,9 @@ fn apply_snapshot(
         SamFailureAction::GracefulShutdown
     ));
     ui.set_settings_sam_monitor_status(sam_monitor_status_text(&snapshot.sam_monitor_status).into());
+    ui.set_settings_sam_monitor_detail(
+        sam_monitor_status_detail(&snapshot.sam_monitor_status).into(),
+    );
     ui.set_settings_sam_monitor_tone(sam_monitor_status_tone(&snapshot.sam_monitor_status));
     ui.set_settings_sam_test_status(sam_test_status_text(&snapshot.sam_test_status).into());
     ui.set_settings_sam_test_tone(sam_test_status_tone(&snapshot.sam_test_status));
@@ -3302,9 +3644,11 @@ fn apply_frontend_event(
                     session_id, key, ..
                 } => {
                     mappings.contact_tofu_states.borrow_mut().remove(session_id);
+                    mappings.session_attention.borrow_mut().remove(session_id);
                     mappings.offline_activities.borrow_mut().remove(session_id);
                     mappings.conversations.borrow_mut().remove(session_id);
                     mappings.reply_drafts.borrow_mut().remove(session_id);
+                    mappings.pasted_images.borrow_mut().remove(session_id);
                     mappings.session_logs.borrow_mut().remove(session_id);
                     mappings.open_log_panels.borrow_mut().remove(session_id);
                     mappings.rendezvous_outputs.borrow_mut().remove(session_id);
@@ -3376,6 +3720,7 @@ fn apply_frontend_event(
             ui.set_operation_status(format!("Session {session:?}").into());
         }
         FrontendEvent::Contact(contact) => {
+            update_contact_attention(mappings, &contact);
             let clear_rendezvous_auth = match &contact {
                 ContactSessionEvent::IncomingCall { session_id, .. }
                 | ContactSessionEvent::Disconnected { session_id, .. } => Some(*session_id),
@@ -3419,6 +3764,16 @@ fn apply_frontend_event(
             ui.set_operation_status(group_event_status(group).into());
         }
         FrontendEvent::FileTransfer(event) => {
+            let unread_session = match &event {
+                FileTransferEvent::Offered {
+                    session_id,
+                    direction: FileTransferDirection::Received,
+                    ..
+                } => Some(*session_id),
+                _ => None,
+            };
+            let attention_changed = unread_session
+                .is_some_and(|session_id| mark_session_unread(ui, mappings, session_id));
             let progress = match &event {
                 FileTransferEvent::Progress {
                     session_id,
@@ -3434,14 +3789,21 @@ fn apply_frontend_event(
             }) {
                 refresh_messages(ui, mappings);
             }
+            if attention_changed {
+                refresh_sessions_from_latest(ui, mappings, sender);
+            }
             ui.set_operation_status(status.into());
         }
         FrontendEvent::Offline(event) => {
             apply_offline_event(ui, mappings, sender, event);
         }
         FrontendEvent::TextReceived(event) => {
+            let attention_changed = mark_session_unread(ui, mappings, event.session_id);
             receive_text(mappings, &event);
             refresh_messages(ui, mappings);
+            if attention_changed {
+                refresh_sessions_from_latest(ui, mappings, sender);
+            }
             let status = event
                 .warning
                 .or(event.history_warning)
@@ -3459,10 +3821,15 @@ fn apply_frontend_event(
             );
         }
         FrontendEvent::ImageReceived(event) => {
+            let session_id = event.session_id;
             let filename = event.filename.clone();
             match receive_image(mappings, event) {
                 Ok(()) => {
+                    let attention_changed = mark_session_unread(ui, mappings, session_id);
                     refresh_messages(ui, mappings);
+                    if attention_changed {
+                        refresh_sessions_from_latest(ui, mappings, sender);
+                    }
                     ui.set_operation_status(format!("Image received: {filename}").into());
                 }
                 Err(error) => {
@@ -3569,11 +3936,21 @@ fn sam_monitor_status_text(status: &SamMonitorStatus) -> String {
         SamMonitorStatus::Inactive => "Inactive".into(),
         SamMonitorStatus::Checking => "Checking".into(),
         SamMonitorStatus::Healthy => "Healthy".into(),
+        SamMonitorStatus::Degraded { .. } => "Degraded".into(),
+        SamMonitorStatus::Unavailable { .. } => "Unavailable".into(),
+    }
+}
+
+fn sam_monitor_status_detail(status: &SamMonitorStatus) -> String {
+    match status {
         SamMonitorStatus::Degraded {
             consecutive_failures,
             reason,
-        } => format!("Degraded ({consecutive_failures}/3): {reason}"),
-        SamMonitorStatus::Unavailable { reason } => format!("Unavailable: {reason}"),
+        } => format!("{consecutive_failures}/3 failed checks: {reason}"),
+        SamMonitorStatus::Unavailable { reason } => reason.clone(),
+        SamMonitorStatus::Inactive | SamMonitorStatus::Checking | SamMonitorStatus::Healthy => {
+            String::new()
+        }
     }
 }
 
@@ -4439,8 +4816,10 @@ fn apply_command_result(ui: &AppWindow, mappings: &UiMappings, result: CommTools
             ui.set_settings_visible(false);
             "Contact session is opening".into()
         }
-        CommToolsCommandResult::GroupCreated(_) => {
+        CommToolsCommandResult::GroupCreated(group_id) => {
+            *mappings.pending_group_selection.borrow_mut() = Some(group_id);
             ui.set_new_group_name("".into());
+            ui.set_new_group_visible(false);
             "Group created".into()
         }
         CommToolsCommandResult::GroupLocalNameApplied => "Local group member name saved".into(),
@@ -4465,9 +4844,10 @@ fn apply_command_result(ui: &AppWindow, mappings: &UiMappings, result: CommTools
             ui.set_group_confirmation(0);
             clear_group_invitation_fields(ui);
             if deleted_immediately {
-                "Left group and deleted its local data".into()
+                "Left group and deleted its local record and history".into()
             } else {
-                "Group is closing; local data will be deleted after shutdown".into()
+                "Group is closing; its local record and history will be deleted after shutdown"
+                    .into()
             }
         }
         CommToolsCommandResult::GroupDissolutionStarted {
@@ -4476,19 +4856,20 @@ fn apply_command_result(ui: &AppWindow, mappings: &UiMappings, result: CommTools
             ui.set_group_confirmation(0);
             clear_group_invitation_fields(ui);
             if deleted_immediately {
-                "Group dissolved and local data deleted".into()
+                "Group dissolved; its local record and history were deleted".into()
             } else {
-                "Group dissolution sent; local data will be deleted after shutdown".into()
+                "Group dissolution sent; its local record and history will be deleted after shutdown"
+                    .into()
             }
         }
         CommToolsCommandResult::GroupDeleted(_) => {
             ui.set_group_confirmation(0);
             clear_group_invitation_fields(ui);
-            "Local group data deleted".into()
+            "Group record and retained history deleted locally".into()
         }
         CommToolsCommandResult::GroupOpening(_) => {
             ui.set_settings_visible(false);
-            ui.set_group_invites_visible(false);
+            ui.set_group_join_visible(false);
             ui.set_group_details_visible(false);
             ui.set_group_confirmation(0);
             clear_group_invitation_fields(ui);
@@ -4830,6 +5211,8 @@ fn clear_contact_export_form(ui: &AppWindow) {
 }
 
 fn clear_group_invitation_fields(ui: &AppWindow) {
+    ui.set_group_join_visible(false);
+    ui.set_group_invite_private_mode(false);
     ui.set_group_invite_input("".into());
     ui.set_private_request_input("".into());
     ui.set_generated_group_material_label("".into());
@@ -4948,9 +5331,11 @@ fn show_rendezvous_panel(ui: &AppWindow, mappings: &UiMappings, session_id: Sess
     ui.set_lock_confirmation_visible(false);
     ui.set_rendezvous_input("".into());
     if let Some((label, value)) = output {
+        ui.set_rendezvous_answer_mode(label == "Response");
         ui.set_rendezvous_output_label(label.into());
         ui.set_rendezvous_output(value.into());
     } else {
+        ui.set_rendezvous_answer_mode(false);
         ui.set_rendezvous_output_label("".into());
         ui.set_rendezvous_output("".into());
     }
@@ -4960,6 +5345,7 @@ fn show_rendezvous_panel(ui: &AppWindow, mappings: &UiMappings, session_id: Sess
 fn close_rendezvous_panel(ui: &AppWindow, mappings: &UiMappings) {
     mappings.rendezvous_panel_session.borrow_mut().take();
     ui.set_rendezvous_visible(false);
+    ui.set_rendezvous_answer_mode(false);
     ui.set_rendezvous_input("".into());
     ui.set_rendezvous_output_label("".into());
     ui.set_rendezvous_output("".into());
@@ -5080,6 +5466,7 @@ fn clear_pending_transient_selection(mappings: &UiMappings, transient_id: &Trans
 fn focus_catalog_session(
     ui: &AppWindow,
     mappings: &UiMappings,
+    sender: &BackendSender,
     entry: &ContactCatalogEntry,
 ) -> bool {
     let key = match entry {
@@ -5094,10 +5481,14 @@ fn focus_catalog_session(
         return false;
     };
     ui.set_selected_session(index);
+    if let Some(session_id) = row_value(&mappings.sessions, index).flatten() {
+        mark_session_viewed(mappings, session_id);
+    }
     ui.set_message_follow_bottom(true);
     ui.set_message_input("".into());
     ui.set_connect_input_visible(false);
     ui.set_lock_confirmation_visible(false);
+    refresh_sessions_from_latest(ui, mappings, sender);
     refresh_messages(ui, mappings);
     true
 }
@@ -5142,7 +5533,7 @@ fn show_session_details(
             ui.set_new_one_to_one_visible(false);
             ui.set_contact_details_visible(false);
             ui.set_group_details_visible(false);
-            ui.set_group_invites_visible(false);
+            ui.set_group_join_visible(false);
             ui.set_selected_section(0);
             ui.set_selected_contact(contact_index);
             ui.set_selected_contact_active(active);
@@ -5166,23 +5557,24 @@ fn show_session_details(
         ManagedSessionKey::Group(group_id) => {
             let group_index = row_index(&mappings.groups, &group_id)
                 .ok_or_else(|| "The group record is no longer available".to_string())?;
-            let (active, owner) = mappings
+            let (active, owner, initialized) = mappings
                 .latest_snapshot
                 .borrow()
                 .as_ref()
                 .and_then(|snapshot| snapshot.groups.iter().find(|group| group.id == group_id))
-                .map(|group| (group.active, group.owner))
+                .map(|group| (group.active, group.owner, group.local_b32.is_some()))
                 .ok_or_else(|| "The group record is no longer available".to_string())?;
 
             ui.set_settings_visible(false);
             ui.set_new_one_to_one_visible(false);
             ui.set_contact_details_visible(false);
             ui.set_group_details_visible(false);
-            ui.set_group_invites_visible(false);
+            ui.set_group_join_visible(false);
             ui.set_selected_section(1);
             ui.set_selected_group(group_index);
             ui.set_selected_group_active(active);
             ui.set_selected_group_owner(owner);
+            ui.set_selected_group_initialized(initialized);
             ui.set_group_confirmation(0);
             ui.set_selected_group_member(-1);
             ui.set_selected_group_member_removable(false);
@@ -5222,10 +5614,13 @@ fn session_title(
             transient_id,
             transient_labels.get(transient_id).map(String::as_str),
         ),
-        ManagedSessionKey::Group(group_id) => group_names
-            .get(group_id)
-            .cloned()
-            .unwrap_or_else(|| format!("Group {group_id}")),
+        ManagedSessionKey::Group(group_id) => format!(
+            "#{}",
+            group_names
+                .get(group_id)
+                .cloned()
+                .unwrap_or_else(|| format!("Group {group_id}"))
+        ),
     }
 }
 
@@ -5549,6 +5944,7 @@ fn refresh_group_details(ui: &AppWindow, mappings: &UiMappings, selected: Option
         ui.set_group_history_enabled(false);
         ui.set_group_owner_ready(false);
         ui.set_group_leave_pending(false);
+        ui.set_selected_group_initialized(false);
         ui.set_group_confirmation(0);
         return;
     };
@@ -5578,7 +5974,9 @@ fn refresh_group_details(ui: &AppWindow, mappings: &UiMappings, selected: Option
                 "Member"
             }
             .into(),
-            state: if member.connected {
+            state: if member.local {
+                "Local"
+            } else if member.connected {
                 "Online"
             } else {
                 "Offline"
@@ -5612,7 +6010,9 @@ fn refresh_group_details(ui: &AppWindow, mappings: &UiMappings, selected: Option
     ui.set_selected_group_member_removable(selected_member_removable);
     ui.set_group_detail_name(group.display_name.into());
     ui.set_group_detail_role(if group.owner { "Owner" } else { "Participant" }.into());
+    let group_initialized = group.local_b32.is_some();
     ui.set_group_detail_local_b32(group.local_b32.unwrap_or_default().into());
+    ui.set_selected_group_initialized(group_initialized);
     ui.set_group_detail_roster(format!("Roster {}", group.roster_version).into());
     ui.set_group_history_enabled(group.history_enabled);
     ui.set_group_owner_ready(group.owner_ready);
@@ -5629,7 +6029,32 @@ fn refresh_messages(ui: &AppWindow, mappings: &UiMappings) {
         .collect();
     ui.set_messages(message_model(messages));
     refresh_reply_draft(ui, mappings);
+    refresh_pasted_image(ui, mappings);
     refresh_session_logs(ui, mappings);
+}
+
+fn refresh_pasted_image(ui: &AppWindow, mappings: &UiMappings) {
+    let session_id = row_value(&mappings.sessions, ui.get_selected_session()).flatten();
+    let pasted_images = mappings.pasted_images.borrow();
+    let Some(pending) = session_id.and_then(|session_id| pasted_images.get(&session_id)) else {
+        ui.set_pasted_image_visible(false);
+        ui.set_pasted_image_preview(SlintImage::default());
+        ui.set_pasted_image_detail("".into());
+        return;
+    };
+    let original_bytes = pending.prepared.original_bytes.as_ref().map_or(0, Vec::len);
+    ui.set_pasted_image_preview(pending.preview.clone());
+    ui.set_pasted_image_detail(
+        format!(
+            "{} x {} | preview {} | full {}",
+            pending.width,
+            pending.height,
+            format_bytes(pending.prepared.bytes.len() as u64),
+            format_bytes(original_bytes as u64),
+        )
+        .into(),
+    );
+    ui.set_pasted_image_visible(true);
 }
 
 fn message_item(message: &PresentedMessage) -> MessageItem {
@@ -6323,12 +6748,15 @@ fn apply_file_transfer_event(mappings: &UiMappings, event: FileTransferEvent) ->
 }
 
 fn current_utc_hms() -> String {
-    let epoch_millis = SystemTime::now()
+    format_epoch_millis_utc(current_epoch_millis())
+}
+
+fn current_epoch_millis() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
-        .min(u128::from(u64::MAX)) as u64;
-    format_epoch_millis_utc(epoch_millis)
+        .min(u128::from(u64::MAX)) as u64
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -6742,8 +7170,7 @@ fn text_bubble_width(
         .fold(0.0_f32, f32::max);
     let author_width = author.chars().count() as f32 * 7.0 + 4.0;
     let footer = format!(
-        "{timestamp}{}{}",
-        if offline { "  OFFLINE" } else { "" },
+        "{timestamp}{}",
         if expected_deliveries > 0 {
             format!("  0/{expected_deliveries} delivered")
         } else {
@@ -6751,8 +7178,12 @@ fn text_bubble_width(
         }
     );
     let history_indicator_width = if stored { 22.0 } else { 0.0 };
-    let footer_width =
-        56.0 + history_indicator_width + footer.chars().count() as f32 * 6.0 + 4.0;
+    let offline_indicator_width = if offline { 22.0 } else { 0.0 };
+    let footer_width = 56.0
+        + history_indicator_width
+        + offline_indicator_width
+        + footer.chars().count() as f32 * 6.0
+        + 4.0;
     let body_width = longest_text_width
         .max(author_width)
         .max(footer_width)
@@ -7124,6 +7555,47 @@ mod tests {
     }
 
     #[test]
+    fn unattended_incoming_call_is_counted_only_after_it_ends() {
+        let mut attention = SessionAttention::default();
+
+        attention.start_incoming_call();
+        attention.change_contact_phase(OneToOnePhase::IncomingPending);
+        assert!(attention.incoming_call);
+        assert_eq!(attention.missed_calls, 0);
+
+        attention.change_contact_phase(OneToOnePhase::Standby);
+        assert!(!attention.incoming_call);
+        assert_eq!(attention.missed_calls, 1);
+    }
+
+    #[test]
+    fn answered_or_declined_incoming_call_is_not_counted_as_missed() {
+        for terminal_phase in [OneToOnePhase::Handshaking, OneToOnePhase::Standby] {
+            let mut attention = SessionAttention::default();
+            attention.start_incoming_call();
+            attention.handle_incoming_call();
+            attention.change_contact_phase(terminal_phase);
+
+            assert!(!attention.incoming_call);
+            assert_eq!(attention.missed_calls, 0);
+        }
+    }
+
+    #[test]
+    fn viewing_session_clears_content_and_missed_call_attention() {
+        let mut attention = SessionAttention {
+            unread_content: true,
+            missed_calls: 3,
+            ..SessionAttention::default()
+        };
+
+        attention.mark_viewed();
+
+        assert!(!attention.unread_content);
+        assert_eq!(attention.missed_calls, 0);
+    }
+
+    #[test]
     fn file_progress_row_is_scoped_by_transfer_direction_and_identifier() {
         let messages = vec![
             presented_file_message(17, true),
@@ -7388,6 +7860,23 @@ mod tests {
         assert_eq!(
             transient_title(&transient_id, None),
             format!("Transient {transient_id}")
+        );
+    }
+
+    #[test]
+    fn group_session_titles_use_channel_prefix_without_changing_the_stored_name() {
+        let group_id = commtools_core::GroupId::new("group-title").expect("group identifier");
+        let mut names = BTreeMap::new();
+        names.insert(group_id.clone(), "Operations".into());
+
+        assert_eq!(
+            session_title(
+                &ManagedSessionKey::Group(group_id),
+                &BTreeMap::new(),
+                &names,
+                &BTreeMap::new(),
+            ),
+            "#Operations"
         );
     }
 
@@ -7708,9 +8197,10 @@ mod tests {
         };
         let test = SamTestStatus::Failed("unexpected EOF".into());
 
+        assert_eq!(sam_monitor_status_text(&monitor), "Degraded");
         assert_eq!(
-            sam_monitor_status_text(&monitor),
-            "Degraded (2/3): connection refused"
+            sam_monitor_status_detail(&monitor),
+            "2/3 failed checks: connection refused"
         );
         assert_eq!(sam_monitor_status_tone(&monitor), 2);
         assert_eq!(sam_test_status_text(&test), "Failed: unexpected EOF");

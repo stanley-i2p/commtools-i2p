@@ -1,3 +1,8 @@
+//! Dedicated CommTools runtime thread for the Slint frontend.
+//!
+//! Slint callbacks never drive async networking directly. Commands cross into this thread, while
+//! immutable snapshots and typed events cross back to the UI thread.
+
 use commtools_core::{ApplicationPhase, VaultLease, VaultRepository};
 use commtools_runtime::{
     ApplicationDriver, ApplicationDriverConfig, CommToolsCommand, CommToolsCommandResult,
@@ -245,6 +250,7 @@ async fn backend_loop(
             }
             if active_driver.application_phase() == ApplicationPhase::Stopped {
                 drop(driver.take());
+
                 if wipe_after_shutdown
                     && let Err(error) = repository.wipe_all()
                 {

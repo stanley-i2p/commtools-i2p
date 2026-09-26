@@ -1,3 +1,8 @@
+//! Stable, presentation-neutral layer between CommTools and UI shells.
+//!
+//! A frontend submits commands, renders snapshots, and consumes events. It
+//! should not duplicate session state transitions locally(!).
+
 use crate::{ApplicationDriver, DriverError, HistoryWriteOutcome, SamMonitorStatus, SamTestStatus};
 use commtools_core::{
     ACTIVE_DEADDROP_REPLICA_COUNT, ApplicationPhase, CollisionWinner, ContactBackupInspection,
@@ -261,7 +266,8 @@ pub enum FileTransferEvent {
     },
 }
 
-/// Presentation-neutral commands supported by the runtime facade.
+/// Presentation-neutral commands supported by the runtime.
+
 #[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CommToolsCommand {
@@ -470,7 +476,9 @@ pub enum CommToolsCommand {
     BeginShutdown,
 }
 
-/// Typed result returned after a runtime command is accepted.
+/// Result returned after a runtime command completes its synchronous state transition.
+///
+/// Network and delivery are asynchronous and are reported through [`FrontendEvent`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CommToolsCommandResult {
@@ -562,7 +570,8 @@ pub enum CommToolsCommandResult {
     ShutdownStarted,
 }
 
-/// Immutable state intended for rendering by terminal, desktop, or mobile frontends.
+/// Immutable state for rendering by terminal, desktop, or mobile frontends.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CommToolsSnapshot {
@@ -815,7 +824,8 @@ pub enum ApplicationLifecycleEvent {
     Stopped,
 }
 
-/// Presentation-neutral events emitted by the runtime for any frontend.
+/// Presentation neutral events emitted by the runtime for any frontend.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FrontendEvent {

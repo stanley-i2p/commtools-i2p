@@ -1,5 +1,11 @@
 #![forbid(unsafe_code)]
 
+//! Async orchestration:) facade for CommTools frontends.
+//!
+//! `ApplicationDriver` owns protocol coordinators, SAM resources, workers, and the unlocked vault.
+//! UI shells interact through the typed API and must allow graceful shutdown to reach `Stopped`
+//! before discarding the driver or performing destructive storage operations.
+
 pub mod api;
 
 pub use api::{
@@ -50,7 +56,8 @@ use commtools_core::offline_coordinator::{
     OfflineCoordinator, OfflineCoordinatorAction, OfflineCoordinatorMode, OfflineOperationId,
 };
 use commtools_core::one_to_one::{
-    ConnectionId, OneToOneAction, OneToOneConfig, OneToOneSession, PinnedPeer,
+    ConnectionId, HEARTBEAT_PING_PREFIX, HEARTBEAT_PONG_PREFIX, OneToOneAction,
+    OneToOneConfig, OneToOneSession, PinnedPeer,
 };
 use commtools_core::private_group_invite::{
     PrivateGroupInviteError, PrivateJoinCredential, generate_request, open_invite,
@@ -78,8 +85,9 @@ use tokio::task::JoinHandle;
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(500);
 const COMPLETION_QUEUE_CAPACITY: usize = 1_024;
 const SEND_QUEUE_CAPACITY: usize = 256;
+const PRIORITY_SEND_QUEUE_CAPACITY: usize = 16;
 const IMAGE_SEND_BURST_FRAMES: usize = 1;
-const BULK_SEND_PACING_INTERVAL: Duration = Duration::from_millis(20);
+const BULK_SEND_PACING_INTERVAL: Duration = Duration::from_millis(40);
 const FILE_PROGRESS_STEP_BYTES: u64 = 256 * 1024;
 const FILE_OFFER_TIMEOUT_MS: u64 = 60_000;
 const SAM_LIVENESS_PROBE_INTERVAL_MS: u64 = 10_000;
@@ -213,6 +221,7 @@ struct OriginalImageKey {
 
 struct ManagedConnection {
     send_tx: mpsc::Sender<SendJob>,
+    priority_send_tx: mpsc::Sender<SendJob>,
 }
 
 struct IncomingFileTransfer {
@@ -388,6 +397,7 @@ impl ApplicationDriver {
         Self::with_optional_vault_and_config(Some(vault), config)
     }
 
+    #[cfg(test)]
     fn with_optional_vault(vault: Option<UnlockedVault>) -> Self {
         Self::with_optional_vault_and_config(vault, ApplicationDriverConfig::default())
     }
@@ -686,9 +696,6 @@ impl ApplicationDriver {
     }
 
     pub fn issue_public_group_invite(&mut self, group_id: &GroupId) -> Result<String, DriverError> {
-        if self.group_is_active(group_id) {
-            return Err(DriverError::GroupInviteRequiresClosed(group_id.clone()));
-        }
         let mut group = self
             .vault()
             .ok_or(DriverError::VaultUnavailable)?
@@ -941,6 +948,11 @@ impl ApplicationDriver {
             .get(group_id)
             .cloned()
             .ok_or_else(|| DriverError::GroupNotFound(group_id.clone()))?;
+        let history_scope = HistoryScope::Group(group_storage_key(&group.id));
+        self.vault()
+            .ok_or(DriverError::VaultUnavailable)?
+            .history_repository()?
+            .clear(&history_scope)?;
         let stored_id = group_id.clone();
         self.vault_mut()?.update(move |snapshot| {
             if snapshot.groups.remove(&stored_id).is_none() {
@@ -990,9 +1002,6 @@ impl ApplicationDriver {
         group_id: &GroupId,
         encoded_request: &str,
     ) -> Result<String, DriverError> {
-        if self.group_is_active(group_id) {
-            return Err(DriverError::GroupInviteRequiresClosed(group_id.clone()));
-        }
         let mut group = self
             .vault()
             .ok_or(DriverError::VaultUnavailable)?
@@ -1854,6 +1863,9 @@ impl ApplicationDriver {
     }
 
     pub fn tick(&mut self) -> Result<(), DriverError> {
+        while let Ok(completion) = self.completions_rx.try_recv() {
+            self.process_completion(completion)?;
+        }
         let now_ms = now_epoch_millis();
         let output = self.coordinator.tick(now_ms)?;
         self.process_output(output)?;
@@ -6405,16 +6417,22 @@ impl ApplicationDriver {
         live: LiveConnection,
     ) -> Result<ManagedConnection, DriverError> {
         let (send_tx, send_rx) = mpsc::channel(SEND_QUEUE_CAPACITY);
+        let (priority_send_tx, priority_send_rx) =
+            mpsc::channel(PRIORITY_SEND_QUEUE_CAPACITY);
         let completions = self.completions_tx.clone();
         self.spawn(run_send_worker(
             session_id,
             connection_id,
             runtime,
             live.clone(),
+            priority_send_rx,
             send_rx,
             completions,
         ))?;
-        Ok(ManagedConnection { send_tx })
+        Ok(ManagedConnection {
+            send_tx,
+            priority_send_tx,
+        })
     }
 
     fn close_orphan(
@@ -6666,8 +6684,15 @@ impl ApplicationDriver {
                 session_id,
                 connection_id,
             })?;
-        connection
-            .send_tx
+        // Liveness traffic bypasses the paced bulk queue so a large image or file cannot create a
+        // false heartbeat timeout(!!!). Both queues still serialize onto the same authenticated stream.
+        // Definite rewrite to multiple streams model in CommTools v2
+        let send_tx = if job.is_heartbeat() {
+            &connection.priority_send_tx
+        } else {
+            &connection.send_tx
+        };
+        send_tx
             .try_send(job)
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => DriverError::SendQueueFull {
@@ -6956,6 +6981,26 @@ enum SendJob {
     },
 }
 
+impl SendJob {
+    fn is_heartbeat(&self) -> bool {
+        let Self::Sequence {
+            destination_prelude: None,
+            frames,
+            ..
+        } = self
+        else {
+            return false;
+        };
+        frames.len() == 1 && is_heartbeat_frame(&frames[0])
+    }
+}
+
+fn is_heartbeat_frame(frame: &Frame) -> bool {
+    frame.message_type == MessageType::S
+        && (frame.payload.starts_with(HEARTBEAT_PING_PREFIX.as_bytes())
+            || frame.payload.starts_with(HEARTBEAT_PONG_PREFIX.as_bytes()))
+}
+
 struct OutgoingFileSend {
     transfer_id: u64,
     filename: String,
@@ -7106,6 +7151,7 @@ async fn run_send_worker(
     connection_id: ConnectionId,
     runtime: SamRuntime,
     connection: LiveConnection,
+    mut priority_jobs: mpsc::Receiver<SendJob>,
     mut jobs: mpsc::Receiver<SendJob>,
     completions: mpsc::Sender<Completion>,
 ) {
@@ -7118,6 +7164,7 @@ async fn run_send_worker(
             active_image = queued_images.pop_front();
         }
         let wake = wait_for_send_work(
+            &mut priority_jobs,
             &mut jobs,
             active_file.is_some() || active_image.is_some(),
             next_bulk_send_at,
@@ -7458,28 +7505,48 @@ async fn run_send_worker(
 }
 
 async fn wait_for_send_work(
+    priority_jobs: &mut mpsc::Receiver<SendJob>,
     jobs: &mut mpsc::Receiver<SendJob>,
     bulk_active: bool,
     next_bulk_send_at: tokio::time::Instant,
 ) -> SendWorkerWake {
-    if !bulk_active {
-        return jobs
-            .recv()
-            .await
-            .map_or(SendWorkerWake::QueueClosed, SendWorkerWake::Job);
-    }
-    match jobs.try_recv() {
-        Ok(job) => return SendWorkerWake::Job(job),
-        Err(mpsc::error::TryRecvError::Disconnected) => return SendWorkerWake::QueueClosed,
-        Err(mpsc::error::TryRecvError::Empty) => {}
-    }
-    if tokio::time::Instant::now() >= next_bulk_send_at {
-        return SendWorkerWake::BulkReady;
-    }
-    tokio::select! {
-        biased;
-        job = jobs.recv() => job.map_or(SendWorkerWake::QueueClosed, SendWorkerWake::Job),
-        _ = tokio::time::sleep_until(next_bulk_send_at) => SendWorkerWake::BulkReady,
+    let mut priority_open = true;
+    let mut normal_open = true;
+    loop {
+        match priority_jobs.try_recv() {
+            Ok(job) => return SendWorkerWake::Job(job),
+            Err(mpsc::error::TryRecvError::Disconnected) => priority_open = false,
+            Err(mpsc::error::TryRecvError::Empty) => {}
+        }
+        match jobs.try_recv() {
+            Ok(job) => return SendWorkerWake::Job(job),
+            Err(mpsc::error::TryRecvError::Disconnected) => normal_open = false,
+            Err(mpsc::error::TryRecvError::Empty) => {}
+        }
+        if !priority_open && !normal_open {
+            return SendWorkerWake::QueueClosed;
+        }
+        if bulk_active && tokio::time::Instant::now() >= next_bulk_send_at {
+            return SendWorkerWake::BulkReady;
+        }
+        tokio::select! {
+            biased;
+            job = priority_jobs.recv(), if priority_open => {
+                match job {
+                    Some(job) => return SendWorkerWake::Job(job),
+                    None => priority_open = false,
+                }
+            }
+            job = jobs.recv(), if normal_open => {
+                match job {
+                    Some(job) => return SendWorkerWake::Job(job),
+                    None => normal_open = false,
+                }
+            }
+            _ = tokio::time::sleep_until(next_bulk_send_at), if bulk_active => {
+                return SendWorkerWake::BulkReady;
+            }
+        }
     }
 }
 
@@ -8800,6 +8867,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn queued_control_work_preempts_a_future_bulk_send_slot() {
+        let (_priority_tx, mut priority_rx) = mpsc::channel(1);
         let (tx, mut rx) = mpsc::channel(1);
         tx.send(SendJob::Sequence {
             destination_prelude: None,
@@ -8811,6 +8879,7 @@ mod tests {
         .expect("queue control frame");
 
         let wake = wait_for_send_work(
+            &mut priority_rx,
             &mut rx,
             true,
             tokio::time::Instant::now() + Duration::from_secs(1),
@@ -8823,6 +8892,81 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_heartbeat_preempts_ordinary_work() {
+        let (priority_tx, mut priority_rx) = mpsc::channel(1);
+        let (normal_tx, mut normal_rx) = mpsc::channel(1);
+        normal_tx
+            .send(SendJob::Sequence {
+                destination_prelude: None,
+                frames: vec![Frame::new(MessageType::U, 91, b"message".to_vec())],
+                completion: SendCompletion::None,
+                operation: "test ordinary frame",
+            })
+            .await
+            .expect("queue ordinary frame");
+        priority_tx
+            .send(SendJob::Sequence {
+                destination_prelude: None,
+                frames: vec![Frame::new(
+                    MessageType::S,
+                    92,
+                    format!("{HEARTBEAT_PING_PREFIX}000000000000005c"),
+                )],
+                completion: SendCompletion::None,
+                operation: "test heartbeat frame",
+            })
+            .await
+            .expect("queue heartbeat frame");
+
+        let wake = wait_for_send_work(
+            &mut priority_rx,
+            &mut normal_rx,
+            false,
+            tokio::time::Instant::now(),
+        )
+        .await;
+        assert!(matches!(
+            wake,
+            SendWorkerWake::Job(SendJob::Sequence {
+                operation: "test heartbeat frame",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn only_heartbeat_ping_and_pong_jobs_use_the_priority_queue() {
+        for prefix in [HEARTBEAT_PING_PREFIX, HEARTBEAT_PONG_PREFIX] {
+            let job = SendJob::Sequence {
+                destination_prelude: None,
+                frames: vec![Frame::new(
+                    MessageType::S,
+                    1,
+                    format!("{prefix}0000000000000001"),
+                )],
+                completion: SendCompletion::None,
+                operation: "test heartbeat classification",
+            };
+            assert!(job.is_heartbeat());
+        }
+
+        let quit = SendJob::Sequence {
+            destination_prelude: None,
+            frames: vec![Frame::new(MessageType::S, 2, "__SIGNAL__:QUIT")],
+            completion: SendCompletion::None,
+            operation: "test signal classification",
+        };
+        let message = SendJob::Sequence {
+            destination_prelude: None,
+            frames: vec![Frame::new(MessageType::U, 3, b"message".to_vec())],
+            completion: SendCompletion::None,
+            operation: "test message classification",
+        };
+        assert!(!quit.is_heartbeat());
+        assert!(!message.is_heartbeat());
     }
 
     #[test]
@@ -9992,27 +10136,76 @@ mod tests {
     }
 
     #[test]
-    fn active_group_cannot_issue_a_public_invite() {
-        let mut driver = ApplicationDriver::with_optional_vault(None);
-        let group_id = GroupId::new("invite-group").expect("group id");
-        let local = destination_to_b32(ALICE_DESTINATION).expect("local b32");
-        let group = GroupSession::new(
-            commtools_core::GroupSessionConfig::new(
-                ALICE_DESTINATION,
-                "Alice",
-                "Invite group",
-                local,
-                Vec::new(),
-            )
-            .expect("group config"),
+    fn active_owner_group_can_issue_public_and_private_invites() {
+        let temp = TestDirectory::new("active-owner-invite-issue");
+        let repository = test_vault_repository(&temp.path().join("owner"));
+        let mut vault = repository.create(b"test passphrase").expect("create vault");
+        let group = initialized_owner_group("invite-group");
+        let group_id = group.id.clone();
+        let session = GroupSession::new(
+            GroupSessionConfig::from_record_with_local_destination(&group, ALICE_DESTINATION, 1)
+                .expect("group config"),
         );
+        vault
+            .update(|snapshot| {
+                snapshot.groups.insert(group_id.clone(), group);
+                Ok(())
+            })
+            .expect("store owner group");
+        let mut driver = ApplicationDriver::new(vault);
         driver
-            .open_group(group_id.clone(), group, test_transport(ALICE_DESTINATION))
+            .open_group(
+                group_id.clone(),
+                session,
+                test_transport(ALICE_DESTINATION),
+            )
             .expect("open group");
 
+        let public_invite = driver
+            .issue_public_group_invite(&group_id)
+            .expect("issue public invite while active");
+        let (_, private_request) =
+            generate_request(now_epoch_millis()).expect("generate private request");
+        let private_invite = driver
+            .issue_private_group_invite(&group_id, &private_request)
+            .expect("issue private invite while active");
+        let stored = driver
+            .vault()
+            .expect("vault")
+            .snapshot()
+            .groups
+            .get(&group_id)
+            .expect("stored owner group");
+
+        assert!(driver.group_is_active(&group_id));
+        assert!(decode_public_invite(&public_invite).is_ok());
+        assert!(response_request_id(&private_invite).is_ok());
+        assert_eq!(stored.issued_invites.len(), 2);
+    }
+
+    #[test]
+    fn participant_cannot_issue_public_or_private_invites() {
+        let mut owner = initialized_owner_group("participant-invite-rejection");
+        let invite = issue_public_invite(&mut owner).expect("issue owner invite");
+        let temp = TestDirectory::new("participant-invite-rejection");
+        let repository = test_vault_repository(&temp.path().join("participant"));
+        let vault = repository
+            .create(b"participant passphrase")
+            .expect("create participant vault");
+        let mut participant = ApplicationDriver::new(vault);
+        let group_id = participant
+            .import_public_group_invite(&invite)
+            .expect("import participant group");
+        let (_, private_request) =
+            generate_request(now_epoch_millis()).expect("generate private request");
+
         assert!(matches!(
-            driver.issue_public_group_invite(&group_id),
-            Err(DriverError::GroupInviteRequiresClosed(id)) if id == group_id
+            participant.issue_public_group_invite(&group_id),
+            Err(DriverError::GroupRoster(GroupRosterError::OwnerOnly))
+        ));
+        assert!(matches!(
+            participant.issue_private_group_invite(&group_id, &private_request),
+            Err(DriverError::GroupRoster(GroupRosterError::OwnerOnly))
         ));
     }
 
@@ -10161,7 +10354,7 @@ mod tests {
     }
 
     #[test]
-    fn closed_group_deletion_removes_only_the_selected_record() {
+    fn closed_group_deletion_removes_only_the_selected_record_and_history() {
         let temp = TestDirectory::new("delete-closed-group");
         let repository = test_vault_repository(&temp.path().join("owner"));
         let mut vault = repository.create(b"test passphrase").expect("create vault");
@@ -10177,6 +10370,35 @@ mod tests {
             })
             .expect("store groups");
         let mut driver = ApplicationDriver::new(vault);
+        let history = HistoryRecord {
+            created_ms: 1,
+            timestamp_utc: "12:00:00 UTC".into(),
+            author: "Alice".into(),
+            sender_b32: None,
+            text: "retained group text".into(),
+            mine: true,
+            offline: false,
+            msg_id: Some(1),
+            delivered: false,
+            group_expected_acks: Vec::new(),
+            group_received_acks: Vec::new(),
+        };
+        let deleted_scope = HistoryScope::Group(group_storage_key(&deleted_id));
+        let retained_scope = HistoryScope::Group(group_storage_key(&retained_id));
+        driver
+            .vault()
+            .expect("vault")
+            .history_repository()
+            .expect("history")
+            .replace(&deleted_scope, std::slice::from_ref(&history))
+            .expect("store deleted group history");
+        driver
+            .vault()
+            .expect("vault")
+            .history_repository()
+            .expect("history")
+            .replace(&retained_scope, std::slice::from_ref(&history))
+            .expect("store retained group history");
 
         let removed = driver.delete_group(&deleted_id).expect("delete group");
         let groups = &driver.vault().expect("vault").snapshot().groups;
@@ -10184,6 +10406,26 @@ mod tests {
         assert_eq!(removed.id, deleted_id);
         assert!(!groups.contains_key(&deleted_id));
         assert!(groups.contains_key(&retained_id));
+        assert!(
+            driver
+                .vault()
+                .expect("vault")
+                .history_repository()
+                .expect("history")
+                .load(&deleted_scope)
+                .expect("load deleted history")
+                .is_empty()
+        );
+        assert_eq!(
+            driver
+                .vault()
+                .expect("vault")
+                .history_repository()
+                .expect("history")
+                .load(&retained_scope)
+                .expect("load retained history"),
+            vec![history]
+        );
     }
 
     #[test]
@@ -10773,13 +11015,21 @@ mod tests {
             .expect("open contact");
         let connection_id = ConnectionId::new(3);
         let (send_tx, send_rx) = mpsc::channel(1);
+        let (priority_send_tx, priority_send_rx) = mpsc::channel(1);
         drop(send_rx);
+        drop(priority_send_rx);
         driver
             .resources
             .get_mut(&session_id)
             .expect("contact resources")
             .connections
-            .insert(connection_id, ManagedConnection { send_tx });
+            .insert(
+                connection_id,
+                ManagedConnection {
+                    send_tx,
+                    priority_send_tx,
+                },
+            );
         (driver, session_id, connection_id)
     }
 

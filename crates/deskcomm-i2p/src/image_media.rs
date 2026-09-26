@@ -1,3 +1,8 @@
+//! Image validation and conversion for DeskComm.
+//!
+//! Live chats send a limited preview first. Optional originals still remain in memory and are transferred
+//! only through the runtime explicit original image request.
+
 use commtools_core::{INLINE_IMAGE_TRANSFER_MAX_BYTES, sanitize_image_filename};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
@@ -73,6 +78,57 @@ pub fn prepare_image_path(
         bytes,
         original_bytes: original_mime.as_ref().map(|_| original_bytes),
         original_mime,
+    })
+}
+
+pub fn prepare_clipboard_image(
+    width: usize,
+    height: usize,
+    pixels: Vec<u8>,
+    max_preview_bytes: usize,
+    timestamp_ms: u64,
+) -> Result<PreparedImage, ImageMediaError> {
+    // Re-encoding raw clipboard pixels strips source metadata and gives the requested
+    // original a MIME/size that can be validated independently of the preview.
+    let expected_bytes = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(ImageMediaError::InvalidClipboardData)?;
+    if expected_bytes == 0 || expected_bytes != pixels.len() {
+        return Err(ImageMediaError::InvalidClipboardData);
+    }
+    if expected_bytes > INLINE_IMAGE_TRANSFER_MAX_BYTES {
+        return Err(ImageMediaError::InvalidSourceSize(expected_bytes as u64));
+    }
+    let width = u32::try_from(width).map_err(|_| ImageMediaError::InvalidClipboardData)?;
+    let height = u32::try_from(height).map_err(|_| ImageMediaError::InvalidClipboardData)?;
+    validate_dimensions(width, height)?;
+    let rgba = image::RgbaImage::from_raw(width, height, pixels)
+        .ok_or(ImageMediaError::InvalidClipboardData)?;
+    let decoded = DynamicImage::ImageRgba8(rgba);
+
+    let mut original = Cursor::new(Vec::new());
+    decoded
+        .write_to(&mut original, ImageFormat::Png)
+        .map_err(ImageMediaError::Encode)?;
+    let original_bytes = original.into_inner();
+    if original_bytes.is_empty() || original_bytes.len() > INLINE_IMAGE_TRANSFER_MAX_BYTES {
+        return Err(ImageMediaError::InvalidSourceSize(original_bytes.len() as u64));
+    }
+
+    let (bytes, mime) = encode_preview(decoded)?;
+    if bytes.is_empty() || bytes.len() > max_preview_bytes {
+        return Err(ImageMediaError::EncodedPreviewTooLarge {
+            actual: bytes.len(),
+            maximum: max_preview_bytes,
+        });
+    }
+    Ok(PreparedImage {
+        filename: format!("pasted-image-{timestamp_ms}.png"),
+        mime: mime.into(),
+        bytes,
+        original_mime: Some("image/png".into()),
+        original_bytes: Some(original_bytes),
     })
 }
 
@@ -158,6 +214,8 @@ pub enum ImageMediaError {
     InvalidSourceSize(u64),
     #[error("image dimensions are invalid or exceed {IMAGE_MAX_PIXELS} pixels: {width}x{height}")]
     InvalidDimensions { width: u32, height: u32 },
+    #[error("clipboard image pixel data is invalid")]
+    InvalidClipboardData,
     #[error("encoded image preview is {actual} bytes; maximum is {maximum}")]
     EncodedPreviewTooLarge { actual: usize, maximum: usize },
     #[error("image I/O failed for {path}: {source}")]
@@ -186,6 +244,41 @@ mod tests {
     #[test]
     fn landscape_preview_fits_high_dpi_bubble_bounds() {
         assert_eq!(encoded_preview_dimensions(1_000, 750), (840, 630));
+    }
+
+    #[test]
+    fn clipboard_image_preserves_full_pixels_as_png_and_bounds_preview() {
+        let width = 1_000usize;
+        let height = 750usize;
+        let image = prepare_clipboard_image(
+            width,
+            height,
+            vec![255; width * height * 4],
+            INLINE_IMAGE_TRANSFER_MAX_BYTES,
+            42,
+        )
+        .expect("prepare clipboard image");
+        assert_eq!(image.filename, "pasted-image-42.png");
+        assert_eq!(image.mime, "image/png");
+        assert_eq!(image.original_mime.as_deref(), Some("image/png"));
+        let preview = image::load_from_memory(&image.bytes).expect("decode preview");
+        let original = image::load_from_memory(
+            image
+                .original_bytes
+                .as_deref()
+                .expect("clipboard original bytes"),
+        )
+        .expect("decode original");
+        assert_eq!((preview.width(), preview.height()), (840, 630));
+        assert_eq!((original.width(), original.height()), (1_000, 750));
+    }
+
+    #[test]
+    fn clipboard_image_rejects_mismatched_rgba_data() {
+        assert!(matches!(
+            prepare_clipboard_image(2, 2, vec![0; 15], INLINE_IMAGE_TRANSFER_MAX_BYTES, 1),
+            Err(ImageMediaError::InvalidClipboardData)
+        ));
     }
 
     #[test]

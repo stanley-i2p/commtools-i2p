@@ -1,5 +1,6 @@
 import { Button, CheckBox, LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
 import { Icon, IconDisplay, IconSet } from "@lucide";
+import { VaultAnimation, VaultAnimationNode } from "vault-animation.slint";
 
 component CommandButton inherits Button {
     height: 28px;
@@ -7,6 +8,96 @@ component CommandButton inherits Button {
 
 component CompactButton inherits Button {
     height: 26px;
+}
+
+component DataActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    in property <length> label-size: 12px;
+    callback clicked();
+
+    height: 32px;
+    background: root.selected && root.danger ? #4a2629
+        : root.selected ? #174752
+        : !root.enabled ? transparent
+        : action-touch.has-hover && root.danger ? #321f22
+        : action-touch.has-hover ? #1b292e
+        : transparent;
+    border-width: 1px;
+    border-color: root.selected && root.danger ? #df7c73
+        : root.selected ? #47bfd1
+        : !root.enabled ? #303b40
+        : root.danger ? #8b5d5d
+        : #3c4a50;
+    border-radius: 4px;
+
+    Text {
+        text: root.label;
+        color: root.danger ? #df7c73
+            : root.selected ? #f4fafb
+            : !root.enabled ? #59666b
+            : #aebbc0;
+        font-size: root.label-size;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    action-touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+component InspectorConfirmation inherits Rectangle {
+    in property <string> message;
+    in property <bool> controls-enabled: true;
+    in property <color> outline-color: #8b5d5d;
+    callback confirmed();
+    callback cancelled();
+
+    height: 46px;
+    background: #101619;
+    border-width: 1px;
+    border-color: root.outline-color;
+    border-radius: 4px;
+
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 6px;
+        Text {
+            text: root.message;
+            color: #d7e2e5;
+            font-size: 10px;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: 40px;
+            vertical-stretch: 1;
+            background: transparent;
+            CompactButton {
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+                text: "Yes";
+                enabled: root.controls-enabled;
+                clicked => { root.confirmed(); }
+            }
+        }
+        Rectangle {
+            width: 40px;
+            vertical-stretch: 1;
+            background: transparent;
+            CompactButton {
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+                text: "No";
+                enabled: root.controls-enabled;
+                clicked => { root.cancelled(); }
+            }
+        }
+    }
 }
 
 component ContactModeSelector inherits Rectangle {
@@ -71,6 +162,150 @@ component ContactModeSelector inherits Rectangle {
     }
 }
 
+component GroupInvitationModeSelector inherits Rectangle {
+    in-out property <bool> private-mode;
+    in property <bool> enabled: true;
+    callback selected(bool);
+
+    height: 28px;
+    background: #0d1316;
+    border-width: 1px;
+    border-color: #3c4a50;
+    border-radius: 4px;
+    clip: true;
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            horizontal-stretch: 1;
+            background: !root.enabled ? transparent
+                : !root.private-mode ? #174752
+                : public-touch.has-hover ? #132d34 : transparent;
+
+            Text {
+                text: "Public";
+                color: !root.enabled ? #59666b
+                    : !root.private-mode ? #f4fafb : #aebbc0;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            public-touch := TouchArea {
+                enabled: root.enabled;
+                clicked => {
+                    if root.private-mode {
+                        root.private-mode = false;
+                        root.selected(false);
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            width: 1px;
+            background: #3c4a50;
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            background: !root.enabled ? transparent
+                : root.private-mode ? #174752
+                : private-touch.has-hover ? #132d34 : transparent;
+
+            Text {
+                text: "Private";
+                color: !root.enabled ? #59666b
+                    : root.private-mode ? #f4fafb : #aebbc0;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            private-touch := TouchArea {
+                enabled: root.enabled;
+                clicked => {
+                    if !root.private-mode {
+                        root.private-mode = true;
+                        root.selected(true);
+                    }
+                }
+            }
+        }
+    }
+}
+
+component RendezvousModeSelector inherits Rectangle {
+    in-out property <bool> answer-mode;
+    in property <bool> enabled: true;
+    callback selected(bool);
+
+    height: 28px;
+    background: #0d1316;
+    border-width: 1px;
+    border-color: #3c4a50;
+    border-radius: 4px;
+    clip: true;
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            horizontal-stretch: 1;
+            background: !root.enabled ? transparent
+                : !root.answer-mode ? #174752
+                : initiate-touch.has-hover ? #132d34 : transparent;
+
+            Text {
+                text: "Initiate";
+                color: !root.enabled ? #59666b
+                    : !root.answer-mode ? #f4fafb : #aebbc0;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            initiate-touch := TouchArea {
+                enabled: root.enabled;
+                clicked => {
+                    if root.answer-mode {
+                        root.answer-mode = false;
+                        root.selected(false);
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            width: 1px;
+            background: #3c4a50;
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            background: !root.enabled ? transparent
+                : root.answer-mode ? #174752
+                : answer-touch.has-hover ? #132d34 : transparent;
+
+            Text {
+                text: "Answer";
+                color: !root.enabled ? #59666b
+                    : root.answer-mode ? #f4fafb : #aebbc0;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            answer-touch := TouchArea {
+                enabled: root.enabled;
+                clicked => {
+                    if !root.answer-mode {
+                        root.answer-mode = true;
+                        root.selected(true);
+                    }
+                }
+            }
+        }
+    }
+}
+
 export struct CatalogItem {
     title: string,
     detail: string,
@@ -115,6 +350,9 @@ export struct SessionItem {
     history-enabled: bool,
     has-details: bool,
     opening: bool,
+    unread-content: bool,
+    incoming-call: bool,
+    missed-calls: int,
 }
 
 export struct MessageItem {
@@ -201,10 +439,62 @@ component RootTab inherits Rectangle {
     }
 }
 
+component SessionKindMarker inherits Rectangle {
+    in property <string> label;
+    in property <string> description: "";
+
+    width: 20px;
+    height: 20px;
+    background: transparent;
+    border-width: 1px;
+    border-color: #536269;
+    border-radius: 3px;
+
+    Text {
+        text: root.label;
+        color: #b9c5c8;
+        font-size: 10px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.description != "": Tooltip {
+        Text {
+            text: root.description;
+            color: #edf3f4;
+            font-size: 11px;
+        }
+    }
+}
+
+component ContactTrustIndicator inherits Rectangle {
+    in property <bool> locked;
+
+    width: 18px;
+    height: 20px;
+    background: transparent;
+
+    IconDisplay {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        icon: root.locked ? IconSet.Lock : IconSet.LockOpen;
+        size: 13px;
+        stroke: root.locked ? #70c990 : #d6a85f;
+        stroke-width: 1.7;
+    }
+    Tooltip {
+        Text {
+            text: root.locked ? "Peer identity locked" : "Peer identity not locked";
+            color: #edf3f4;
+            font-size: 11px;
+        }
+    }
+}
+
 component CatalogRow inherits Rectangle {
     in property <CatalogItem> entry;
     in property <bool> selected;
     in property <bool> enabled: true;
+    in property <bool> contact-markers: false;
     callback activated();
 
     height: root.entry.detail == "" ? 38px : 56px;
@@ -218,14 +508,38 @@ component CatalogRow inherits Rectangle {
         spacing: 2px;
 
         HorizontalLayout {
+            spacing: root.contact-markers ? 6px : 0px;
             Text {
+                horizontal-stretch: 1;
                 text: root.entry.title;
                 color: #e5ecee;
                 font-size: 14px;
                 overflow: elide;
                 vertical-alignment: center;
             }
-            Text {
+            if root.contact-markers: SessionKindMarker {
+                label: root.entry.transient ? "T" : "P";
+                description: root.entry.transient ? "Transient contact" : "Persistent contact";
+            }
+            if root.contact-markers: Rectangle {
+                width: 18px;
+                height: 20px;
+                background: transparent;
+
+                if !root.entry.transient: ContactTrustIndicator {
+                    locked: root.entry.peer-pinned;
+                }
+            }
+            if root.contact-markers: Text {
+                width: 52px;
+                text: root.entry.state;
+                color: root.entry.state == "Open" ? #70c990 : #87959a;
+                font-size: 11px;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+            }
+            if !root.contact-markers: Text {
+                horizontal-stretch: 0;
                 text: root.entry.state;
                 color: root.entry.state == "Open" ? #70c990 : #87959a;
                 font-size: 11px;
@@ -278,7 +592,8 @@ component GroupMemberRow inherits Rectangle {
             }
             Text {
                 text: root.entry.role + "  " + root.entry.state;
-                color: root.entry.state == "Online" ? #70c990 : #87959a;
+                color: root.entry.state == "Online" || root.entry.state == "Local"
+                    ? #70c990 : #87959a;
                 font-size: 10px;
                 horizontal-alignment: right;
                 vertical-alignment: center;
@@ -353,6 +668,7 @@ component DeaddropServerRow inherits Rectangle {
 component SessionTab inherits Rectangle {
     in property <SessionItem> entry;
     in property <bool> selected;
+    in property <bool> attention-pulse;
     callback activated();
 
     width: 160px;
@@ -375,7 +691,54 @@ component SessionTab inherits Rectangle {
             overflow: elide;
             vertical-alignment: center;
         }
+        if root.entry.incoming-call || root.entry.missed-calls > 0: Rectangle {
+            width: 30px;
+            height: 32px;
+            background: transparent;
+
+            if root.entry.incoming-call: IconDisplay {
+                x: 1px;
+                y: (parent.height - self.height) / 2;
+                icon: IconSet.PhoneIncoming;
+                size: 13px;
+                stroke: root.attention-pulse ? #47bfd1 : #274d55;
+                stroke-width: 1.7;
+            }
+            if !root.entry.incoming-call && root.entry.missed-calls > 0: IconDisplay {
+                x: 0px;
+                y: (parent.height - self.height) / 2;
+                icon: IconSet.PhoneMissed;
+                size: 12px;
+                stroke: #d6a85f;
+                stroke-width: 1.7;
+            }
+            if !root.entry.incoming-call && root.entry.missed-calls > 0: Text {
+                x: 13px;
+                width: 17px;
+                height: parent.height;
+                text: root.entry.missed-calls > 99 ? "99+" : "" + root.entry.missed-calls;
+                color: #d6a85f;
+                font-size: 9px;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+            }
+        }
+        if root.entry.unread-content: Rectangle {
+            width: 16px;
+            height: 32px;
+            background: transparent;
+
+            IconDisplay {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                icon: IconSet.MessageSquareDot;
+                size: 12px;
+                stroke: #47bfd1;
+                stroke-width: 1.7;
+            }
+        }
         Text {
+            width: 54px;
             text: root.entry.state;
             color: root.entry.state == "Connected" || root.entry.state == "Active"
                 ? #70c990
@@ -385,29 +748,11 @@ component SessionTab inherits Rectangle {
             font-size: 10px;
             horizontal-alignment: right;
             vertical-alignment: center;
+            overflow: elide;
         }
     }
     session-tab-touch := TouchArea {
         clicked => { root.activated(); }
-    }
-}
-
-component SessionKindMarker inherits Rectangle {
-    in property <string> label;
-
-    width: 20px;
-    height: 20px;
-    background: transparent;
-    border-width: 1px;
-    border-color: #536269;
-    border-radius: 3px;
-
-    Text {
-        text: root.label;
-        color: #b9c5c8;
-        font-size: 10px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
     }
 }
 
@@ -455,6 +800,7 @@ component AddressCopyControl inherits Rectangle {
     in property <color> accent;
     in property <bool> compact: false;
     in property <bool> full-address: false;
+    in property <string> tooltip: "";
     callback activated();
 
     width: 150px;
@@ -493,6 +839,28 @@ component AddressCopyControl inherits Rectangle {
             if root.address != "" {
                 root.activated();
             }
+        }
+    }
+    if root.tooltip != "" && root.address != "" && address-touch.has-hover: Rectangle {
+        x: 0px;
+        y: -38px;
+        width: root.width;
+        height: 34px;
+        background: #0d1316;
+        border-width: 1px;
+        border-color: #46565c;
+        border-radius: 3px;
+
+        Text {
+            x: 6px;
+            width: parent.width - 12px;
+            height: parent.height;
+            text: root.tooltip;
+            color: #d7e2e5;
+            font-size: 9px;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            vertical-alignment: center;
         }
     }
 }
@@ -554,6 +922,28 @@ component HistoryIndicator inherits Rectangle {
     }
 }
 
+component OfflineIndicator inherits Rectangle {
+    width: 16px;
+    height: 18px;
+    background: transparent;
+
+    IconDisplay {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        icon: IconSet.Cloud;
+        size: 13px;
+        stroke: #87959a;
+        stroke-width: 1.7;
+    }
+    Tooltip {
+        Text {
+            text: "Delivered through offline deaddrop";
+            color: #edf3f4;
+            font-size: 11px;
+        }
+    }
+}
+
 component MessageBubble inherits Rectangle {
     in property <MessageItem> entry;
     in property <length> available-width;
@@ -573,7 +963,9 @@ component MessageBubble inherits Rectangle {
         root.available-width * 0.90
     );
     height: max(58px, bubble-content.preferred-height + 18px);
-    background: root.entry.mine ? #15372d : #14343b;
+    background: root.entry.offline && !root.entry.is-image && !root.entry.is-file
+        ? transparent
+        : root.entry.mine ? #15372d : #14343b;
     border-width: 1px;
     border-color: root.entry.mine ? #3f8c70 : #367f8c;
     border-radius: 6px;
@@ -774,9 +1166,15 @@ component MessageBubble inherits Rectangle {
                 description: "Stored in encrypted history";
             }
             Text {
-                text: root.entry.timestamp
-                    + (root.entry.offline ? "  OFFLINE" : "")
-                    + (root.entry.delivery != "" ? "  " + root.entry.delivery : "");
+                text: root.entry.timestamp;
+                color: #87959a;
+                font-size: 10px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            if root.entry.offline && !root.entry.is-image && !root.entry.is-file: OfflineIndicator { }
+            if root.entry.delivery != "": Text {
+                text: root.entry.delivery;
                 color: #87959a;
                 font-size: 10px;
                 horizontal-alignment: right;
@@ -859,7 +1257,8 @@ component LogRow inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "DeskComm-I2P";
+    in property <string> application-title: "DeskComm-I2P";
+    title: root.application-title;
     preferred-width: 1280px;
     preferred-height: 800px;
     min-width: 1280px;
@@ -872,6 +1271,9 @@ export component AppWindow inherits Window {
     in-out property <string> password: "";
     in-out property <string> confirm-password: "";
     in property <string> vault-path: "";
+    in property <[VaultAnimationNode]> vault-animation-nodes;
+    in property <string> vault-animation-background-edges: "";
+    in property <string> vault-animation-active-edges: "";
     in property <[CatalogItem]> contacts;
     in property <[CatalogItem]> groups;
     in property <[SessionItem]> sessions;
@@ -886,11 +1288,12 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-visible: false;
     in-out property <bool> new-one-to-one-visible: false;
     in-out property <bool> new-one-to-one-transient: false;
+    in-out property <bool> new-group-visible: false;
+    in-out property <bool> group-join-visible: false;
     in-out property <bool> contact-details-visible: false;
-    in-out property <bool> group-invites-visible: false;
     in-out property <bool> group-details-visible: false;
     property <bool> context-inspector-visible: root.contact-details-visible
-        || root.group-details-visible || root.group-invites-visible;
+        || root.group-details-visible;
     property <bool> context-inspector-side-by-side: root.context-inspector-visible
         && root.width >= 1000px;
     property <length> context-inspector-width: max(0px, (root.width - 329px) * 0.35);
@@ -904,6 +1307,7 @@ export component AppWindow inherits Window {
     in property <bool> settings-sam-liveness-enabled: false;
     in property <bool> settings-sam-shutdown-on-failure: false;
     in property <string> settings-sam-monitor-status: "Inactive";
+    in property <string> settings-sam-monitor-detail: "";
     in property <int> settings-sam-monitor-tone: 0;
     in property <string> settings-sam-test-status: "Not run";
     in property <int> settings-sam-test-tone: 0;
@@ -925,6 +1329,7 @@ export component AppWindow inherits Window {
     in-out property <string> group-invite-input: "";
     in-out property <string> generated-group-material-label: "";
     in-out property <string> generated-group-material: "";
+    in-out property <bool> group-invite-private-mode: false;
     in-out property <string> contact-detail-name: "";
     in-out property <string> contact-rename-input: "";
     in-out property <string> contact-detail-local-b32: "";
@@ -950,15 +1355,20 @@ export component AppWindow inherits Window {
     in-out property <string> group-local-name-input: "";
     in-out property <string> peer-address-input: "";
     in-out property <string> message-input: "";
+    in-out property <bool> pasted-image-visible: false;
+    in-out property <image> pasted-image-preview;
+    in-out property <string> pasted-image-detail: "";
     in-out property <bool> reply-visible: false;
     in-out property <string> reply-author: "";
     in-out property <string> reply-preview: "";
     in-out property <bool> message-follow-bottom: true;
     in-out property <bool> session-logs-visible: false;
+    in-out property <bool> attention-pulse: true;
     in-out property <bool> connect-input-visible: false;
     in-out property <bool> unlock-confirmation-visible: false;
     in-out property <bool> lock-confirmation-visible: false;
     in-out property <bool> rendezvous-visible: false;
+    in-out property <bool> rendezvous-answer-mode: false;
     in-out property <string> rendezvous-input: "";
     in-out property <string> rendezvous-output-label: "";
     in-out property <string> rendezvous-output: "";
@@ -976,6 +1386,7 @@ export component AppWindow inherits Window {
     in-out property <bool> selected-contact-transient: false;
     in-out property <bool> selected-group-active: false;
     in-out property <bool> selected-group-owner: false;
+    in-out property <bool> selected-group-initialized: false;
     in-out property <bool> group-owner-ready: false;
     in-out property <bool> group-leave-pending: false;
     in-out property <int> selected-group-member: -1;
@@ -1027,11 +1438,14 @@ export component AppWindow inherits Window {
     callback lock-session(int);
     callback toggle-rendezvous(int);
     callback generate-rendezvous-request(int);
-    callback submit-rendezvous-input(int, string);
+    callback submit-rendezvous-input(int, string, bool);
     callback revoke-rendezvous(int);
     callback copy-rendezvous-output(string);
     callback unlock-contact(int);
     callback send-text(int, string);
+    callback paste-clipboard-image(int) -> bool;
+    callback send-pasted-image(int);
+    callback cancel-pasted-image(int);
     callback copy-text-message(int, int);
     callback reply-text-message(int, int);
     callback cancel-reply(int);
@@ -1063,82 +1477,120 @@ export component AppWindow inherits Window {
     if root.screen != 2: Rectangle {
         background: #101619;
 
-        VerticalLayout {
-            alignment: center;
-            padding-left: 24px;
-            padding-right: 24px;
-            spacing: 12px;
+        HorizontalLayout {
+            padding: 24px;
+            spacing: 24px;
 
-            Image {
-                source: @image-url("../assets/commtools-i2p.png");
-                width: 112px;
-                height: 112px;
-                image-fit: contain;
-                horizontal-alignment: center;
+            if root.screen == 3: Rectangle {
+                horizontal-stretch: 1;
+                background: transparent;
             }
-            Text {
-                text: "DeskComm-I2P";
-                color: #f2f7f8;
-                font-size: 27px;
-                font-weight: 600;
-                horizontal-alignment: center;
-            }
-            Text {
-                text: "CommTools desktop client";
-                color: #91a1a7;
-                font-size: 13px;
-                horizontal-alignment: center;
-            }
-            Rectangle { height: 12px; background: transparent; }
-            Text {
-                text: root.screen == 1 ? "Create encrypted vault" :
-                      root.screen == 3 ? "Closing encrypted vault" : "Unlock encrypted vault";
-                color: #d7e2e5;
-                font-size: 16px;
-                horizontal-alignment: center;
-            }
-            Text {
-                text: root.vault-path;
-                color: #6f8086;
-                font-size: 11px;
-                horizontal-alignment: center;
-                overflow: elide;
-            }
-            gate-password := LineEdit {
-                width: 340px;
-                text <=> root.password;
-                input-type: InputType.password;
-                placeholder-text: "Passphrase";
-                enabled: !root.busy && root.screen != 3;
-                accepted(value) => {
-                    if root.screen == 0 {
-                        root.submit-gate(value, "");
+
+            Rectangle {
+                width: 440px;
+                vertical-stretch: 1;
+                background: transparent;
+
+                gate-content := VerticalLayout {
+                    x: (parent.width - self.width) / 2;
+                    width: 340px;
+                    height: parent.height;
+                    alignment: center;
+                    spacing: 12px;
+
+                    Image {
+                        source: @image-url("../assets/commtools-Logo-Plain-vectorised.svg");
+                        width: 340px;
+                        height: 210px;
+                        image-fit: contain;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "DeskComm-I2P";
+                        color: #f2f7f8;
+                        font-size: 27px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "CommTools desktop client";
+                        color: #91a1a7;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                    }
+                    Rectangle { height: 12px; background: transparent; }
+                    Text {
+                        text: root.screen == 1 ? "Create encrypted vault" :
+                              root.screen == 3 ? "Closing encrypted vault" : "Unlock encrypted vault";
+                        color: #d7e2e5;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: root.vault-path;
+                        color: #6f8086;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+                    gate-password := LineEdit {
+                        width: 340px;
+                        text <=> root.password;
+                        input-type: InputType.password;
+                        placeholder-text: "Passphrase";
+                        enabled: !root.busy && root.screen != 3;
+                        accepted(value) => {
+                            if root.screen == 0 {
+                                root.submit-gate(value, "");
+                            }
+                        }
+                    }
+                    if root.screen == 1: LineEdit {
+                        width: 340px;
+                        text <=> root.confirm-password;
+                        input-type: InputType.password;
+                        placeholder-text: "Confirm passphrase";
+                        enabled: !root.busy;
+                        accepted(value) => { root.submit-gate(root.password, value); }
+                    }
+                    Button {
+                        width: 340px;
+                        text: root.busy ? "Please wait" : (root.screen == 1 ? "Create vault" : "Unlock");
+                        enabled: !root.busy && root.screen != 3 && root.password != "";
+                        clicked => { root.submit-gate(root.password, root.confirm-password); }
+                    }
+                    Text {
+                        width: 340px;
+                        min-height: 34px;
+                        text: root.gate-error;
+                        color: #e17878;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
                     }
                 }
             }
-            if root.screen == 1: LineEdit {
-                width: 340px;
-                text <=> root.confirm-password;
-                input-type: InputType.password;
-                placeholder-text: "Confirm passphrase";
-                enabled: !root.busy;
-                accepted(value) => { root.submit-gate(root.password, value); }
+
+            if root.screen < 2: Rectangle {
+                width: 1px;
+                vertical-stretch: 1;
+                background: #334148;
             }
-            Button {
-                width: 340px;
-                text: root.busy ? "Please wait" : (root.screen == 1 ? "Create vault" : "Unlock");
-                enabled: !root.busy && root.screen != 3 && root.password != "";
-                clicked => { root.submit-gate(root.password, root.confirm-password); }
+
+            if root.screen < 2: VaultAnimation {
+                min-width: 0px;
+                min-height: 0px;
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                nodes: root.vault-animation-nodes;
+                background-edges: root.vault-animation-background-edges;
+                active-edges: root.vault-animation-active-edges;
             }
-            Text {
-                width: 440px;
-                min-height: 34px;
-                text: root.gate-error;
-                color: #e17878;
-                font-size: 12px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                wrap: word-wrap;
+
+            if root.screen == 3: Rectangle {
+                horizontal-stretch: 1;
+                background: transparent;
             }
         }
     }
@@ -1178,7 +1630,9 @@ export component AppWindow inherits Window {
                             spacing: 6px;
                             RootTab {
                                 label: "Contacts";
-                                enabled: !root.new-one-to-one-visible;
+                                enabled: !root.new-one-to-one-visible
+                                    && !root.new-group-visible
+                                    && !root.group-join-visible;
                                 selected: !root.settings-visible
                                     && root.selected-section == 0;
                                 activated => {
@@ -1190,10 +1644,12 @@ export component AppWindow inherits Window {
                                     }
                                     root.settings-visible = false;
                                     root.new-one-to-one-visible = false;
+                                    root.new-group-visible = false;
+                                    root.new-group-name = "";
                                     root.contact-details-visible = false;
                                     root.contact-confirmation = 0;
                                     root.contact-deaddrop-input = "";
-                                    root.group-invites-visible = false;
+                                    root.group-join-visible = false;
                                     root.group-details-visible = false;
                                     root.group-confirmation = 0;
                                     root.private-request-input = "";
@@ -1208,7 +1664,9 @@ export component AppWindow inherits Window {
                             }
                             RootTab {
                                 label: "Groups";
-                                enabled: !root.new-one-to-one-visible;
+                                enabled: !root.new-one-to-one-visible
+                                    && !root.new-group-visible
+                                    && !root.group-join-visible;
                                 selected: !root.settings-visible
                                     && !root.contact-details-visible
                                     && root.selected-section == 1;
@@ -1221,10 +1679,12 @@ export component AppWindow inherits Window {
                                     }
                                     root.settings-visible = false;
                                     root.new-one-to-one-visible = false;
+                                    root.new-group-visible = false;
+                                    root.new-group-name = "";
                                     root.contact-details-visible = false;
                                     root.contact-confirmation = 0;
                                     root.contact-deaddrop-input = "";
-                                    root.group-invites-visible = false;
+                                    root.group-join-visible = false;
                                     root.group-details-visible = false;
                                     root.group-confirmation = 0;
                                     root.private-request-input = "";
@@ -1251,6 +1711,7 @@ export component AppWindow inherits Window {
                                 vertical-stretch: 1;
                                 for contact[index] in root.contacts: CatalogRow {
                                     entry: contact;
+                                    contact-markers: true;
                                     selected: root.selected-contact == index;
                                     enabled: !root.new-one-to-one-visible;
                                     activated => {
@@ -1280,10 +1741,12 @@ export component AppWindow inherits Window {
                                 for group[index] in root.groups: CatalogRow {
                                     entry: group;
                                     selected: root.selected-group == index;
+                                    enabled: !root.new-group-visible && !root.group-join-visible;
                                     activated => {
                                         root.selected-group = index;
                                         root.selected-group-active = group.active;
                                         root.selected-group-owner = group.owner;
+                                        root.group-invite-private-mode = false;
                                         root.private-request-input = "";
                                         root.group-invite-input = "";
                                         root.generated-group-material-label = "";
@@ -1307,13 +1770,16 @@ export component AppWindow inherits Window {
                                 height: 32px;
                                 spacing: 6px;
                                 CommandButton {
+                                    width: 137px;
                                     text: root.new-one-to-one-visible ? "Cancel" : "New";
                                     enabled: !root.operation-busy && !root.unlock-confirmation-visible;
                                     clicked => {
                                         if !root.new-one-to-one-visible {
                                             root.settings-visible = false;
+                                            root.new-group-visible = false;
+                                            root.new-group-name = "";
                                             root.contact-details-visible = false;
-                                            root.group-invites-visible = false;
+                                            root.group-join-visible = false;
                                             root.group-details-visible = false;
                                             root.contact-confirmation = 0;
                                             root.group-confirmation = 0;
@@ -1333,6 +1799,7 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 CommandButton {
+                                    width: 137px;
                                     text: "Open";
                                     enabled: !root.operation-busy
                                         && !root.new-one-to-one-visible
@@ -1348,10 +1815,10 @@ export component AppWindow inherits Window {
                             if root.new-one-to-one-visible: HorizontalLayout {
                                 height: 32px;
                                 ContactModeSelector {
+                                    width: 280px;
                                     transient-mode <=> root.new-one-to-one-transient;
                                     enabled: !root.operation-busy;
                                 }
-                                Rectangle { horizontal-stretch: 1; background: transparent; }
                             }
                             if root.new-one-to-one-visible && !root.new-one-to-one-transient: LineEdit {
                                 height: 32px;
@@ -1383,6 +1850,7 @@ export component AppWindow inherits Window {
                                 height: 32px;
                                 spacing: 6px;
                                 CommandButton {
+                                    width: 137px;
                                     text: "Details";
                                     enabled: !root.operation-busy
                                         && !root.new-one-to-one-visible
@@ -1392,7 +1860,7 @@ export component AppWindow inherits Window {
                                         root.select-contact(root.selected-contact);
                                         root.settings-visible = false;
                                         root.new-one-to-one-visible = false;
-                                        root.group-invites-visible = false;
+                                        root.group-join-visible = false;
                                         root.group-details-visible = false;
                                         root.contact-details-visible = true;
                                         root.contact-confirmation = 0;
@@ -1403,6 +1871,7 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 CommandButton {
+                                    width: 137px;
                                     text: "Unlock contact";
                                     enabled: !root.operation-busy
                                         && !root.new-one-to-one-visible
@@ -1444,40 +1913,75 @@ export component AppWindow inherits Window {
                         }
 
                         if root.selected-section == 1: VerticalLayout {
-                            height: 108px;
+                            height: root.new-group-visible ? 146px
+                                : root.group-join-visible ? 184px : 70px;
                             spacing: 6px;
-                            LineEdit {
-                                height: 32px;
-                                text <=> root.new-group-name;
-                                placeholder-text: "New group name";
-                                enabled: !root.operation-busy;
-                                accepted(value) => { root.create-group(value); }
-                            }
                             HorizontalLayout {
                                 height: 32px;
                                 spacing: 6px;
                                 CommandButton {
-                                    text: "Create";
-                                    enabled: !root.operation-busy && root.new-group-name != "";
-                                    clicked => { root.create-group(root.new-group-name); }
+                                    width: 137px;
+                                    text: root.new-group-visible ? "Cancel" : "New";
+                                    enabled: !root.operation-busy && !root.group-join-visible;
+                                    clicked => {
+                                        if !root.new-group-visible {
+                                            root.settings-visible = false;
+                                            root.new-one-to-one-visible = false;
+                                            root.contact-details-visible = false;
+                                            root.contact-confirmation = 0;
+                                            root.contact-deaddrop-input = "";
+                                            root.group-join-visible = false;
+                                            root.group-details-visible = false;
+                                            root.group-confirmation = 0;
+                                            root.private-request-input = "";
+                                            root.group-invite-input = "";
+                                            root.generated-group-material-label = "";
+                                            root.generated-group-material = "";
+                                            root.connect-input-visible = false;
+                                            root.unlock-confirmation-visible = false;
+                                            root.lock-confirmation-visible = false;
+                                        }
+                                        root.new-group-visible = !root.new-group-visible;
+                                        root.new-group-name = "";
+                                    }
                                 }
                                 CommandButton {
+                                    width: 137px;
                                     text: "Open";
                                     enabled: !root.operation-busy
+                                        && !root.new-group-visible
+                                        && !root.group-join-visible
                                         && root.selected-group >= 0
                                         && !root.selected-group-active;
                                     clicked => {
                                         root.settings-visible = false;
+                                        root.new-group-visible = false;
                                         root.open-group(root.selected-group);
                                     }
                                 }
+                            }
+                            if root.new-group-visible: LineEdit {
+                                height: 32px;
+                                text <=> root.new-group-name;
+                                placeholder-text: "Group name";
+                                enabled: !root.operation-busy;
+                                accepted(value) => { root.create-group(value); }
+                            }
+                            if root.new-group-visible: CommandButton {
+                                text: "Create";
+                                enabled: !root.operation-busy && root.new-group-name != "";
+                                clicked => { root.create-group(root.new-group-name); }
                             }
                             HorizontalLayout {
                                 height: 32px;
                                 spacing: 6px;
                                 CommandButton {
+                                    width: 137px;
                                     text: "Details";
-                                    enabled: !root.operation-busy && root.selected-group >= 0;
+                                    enabled: !root.operation-busy
+                                        && !root.new-group-visible
+                                        && !root.group-join-visible
+                                        && root.selected-group >= 0;
                                     clicked => {
                                         root.select-group(root.selected-group);
                                         root.settings-visible = false;
@@ -1485,7 +1989,8 @@ export component AppWindow inherits Window {
                                         root.contact-details-visible = false;
                                         root.contact-confirmation = 0;
                                         root.contact-deaddrop-input = "";
-                                        root.group-invites-visible = false;
+                                        root.group-join-visible = false;
+                                        root.group-invite-private-mode = false;
                                         root.private-request-input = "";
                                         root.group-invite-input = "";
                                         root.generated-group-material-label = "";
@@ -1497,27 +2002,76 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 CommandButton {
-                                    text: "Invitations";
-                                    enabled: !root.operation-busy;
+                                    width: 137px;
+                                    text: root.group-join-visible ? "Cancel" : "Join";
+                                    enabled: !root.operation-busy && !root.new-group-visible;
                                     clicked => {
-                                        root.settings-visible = false;
-                                        root.new-one-to-one-visible = false;
-                                        root.contact-details-visible = false;
-                                        root.contact-confirmation = 0;
-                                        root.contact-deaddrop-input = "";
-                                        root.group-details-visible = false;
-                                        root.group-invites-visible = true;
-                                        root.group-confirmation = 0;
-                                        root.connect-input-visible = false;
-                                        root.lock-confirmation-visible = false;
+                                        if !root.group-join-visible {
+                                            root.settings-visible = false;
+                                            root.new-one-to-one-visible = false;
+                                            root.contact-details-visible = false;
+                                            root.contact-confirmation = 0;
+                                            root.contact-deaddrop-input = "";
+                                            root.group-details-visible = false;
+                                            root.group-confirmation = 0;
+                                            root.connect-input-visible = false;
+                                            root.unlock-confirmation-visible = false;
+                                            root.lock-confirmation-visible = false;
+                                        }
+                                        root.group-join-visible = !root.group-join-visible;
+                                        root.private-request-input = "";
+                                        root.group-invite-input = "";
+                                        root.generated-group-material-label = "";
+                                        root.generated-group-material = "";
                                     }
+                                }
+                            }
+                            if root.group-join-visible: HorizontalLayout {
+                                height: 32px;
+                                spacing: 6px;
+                                LineEdit {
+                                    width: 137px;
+                                    height: 28px;
+                                    text <=> root.group-invite-input;
+                                    placeholder-text: "Paste invitation";
+                                    enabled: !root.operation-busy;
+                                    accepted(value) => { root.import-group-invite(value); }
+                                }
+                                CommandButton {
+                                    width: 137px;
+                                    text: "Import";
+                                    enabled: !root.operation-busy && root.group-invite-input != "";
+                                    clicked => { root.import-group-invite(root.group-invite-input); }
+                                }
+                            }
+                            if root.group-join-visible: CommandButton {
+                                height: 32px;
+                                text: "Generate private request";
+                                enabled: !root.operation-busy;
+                                clicked => { root.generate-private-request(); }
+                            }
+                            if root.group-join-visible: AddressCopyControl {
+                                width: 280px;
+                                height: 32px;
+                                prefix: "";
+                                address: root.generated-group-material;
+                                display-address: root.generated-group-material == ""
+                                    ? "Private request"
+                                    : root.generated-group-material;
+                                accent: #47bfd1;
+                                compact: true;
+                                tooltip: "Click to copy. Send this request to the group owner.";
+                                activated => {
+                                    root.copy-group-material(root.generated-group-material);
                                 }
                             }
                         }
 
                         CommandButton {
                             text: root.settings-visible ? "Back to chats" : "Settings";
-                            enabled: !root.new-one-to-one-visible;
+                            enabled: !root.new-one-to-one-visible
+                                && !root.new-group-visible
+                                && !root.group-join-visible;
                             clicked => {
                                 if root.settings-visible {
                                     root.cancel-settings-data-action();
@@ -1527,10 +2081,12 @@ export component AppWindow inherits Window {
                                 }
                                 root.settings-visible = !root.settings-visible;
                                 root.new-one-to-one-visible = false;
+                                root.new-group-visible = false;
+                                root.new-group-name = "";
                                 root.contact-details-visible = false;
                                 root.contact-confirmation = 0;
                                 root.contact-deaddrop-input = "";
-                                root.group-invites-visible = false;
+                                root.group-join-visible = false;
                                 root.group-details-visible = false;
                                 root.group-confirmation = 0;
                                 root.private-request-input = "";
@@ -1562,7 +2118,7 @@ export component AppWindow inherits Window {
                             width: settings-scroll.visible-width;
                             padding: 18px;
                             spacing: 10px;
-                        Text { text: "Settings"; color: #edf3f4; font-size: 18px; }
+                        Text { text: "SAM and Tunnels"; color: #edf3f4; font-size: 14px; }
 
                         Text {
                             text: root.settings-transport-editable
@@ -1574,201 +2130,259 @@ export component AppWindow inherits Window {
                         }
 
                         HorizontalLayout {
-                            height: 30px;
-                            spacing: 8px;
-                            Text {
-                                width: 112px;
-                                text: "SAM host";
-                                color: #87959a;
-                                font-size: 12px;
-                                vertical-alignment: center;
+                            spacing: 12px;
+
+                            VerticalLayout {
+                                horizontal-stretch: 3;
+                                alignment: start;
+                                spacing: 8px;
+                                Text {
+                                    height: 18px;
+                                    text: "SAM endpoint";
+                                    color: #87959a;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                HorizontalLayout {
+                                    height: 30px;
+                                    spacing: 6px;
+                                    Text {
+                                        width: 28px;
+                                        text: "Host";
+                                        color: #87959a;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                    LineEdit {
+                                        height: 28px;
+                                        text <=> root.settings-sam-host;
+                                        placeholder-text: "127.0.0.1";
+                                        enabled: root.settings-transport-editable && !root.operation-busy;
+                                        accepted(value) => { root.set-sam-host(value); }
+                                    }
+                                    CommandButton {
+                                        width: 64px;
+                                        text: "Save";
+                                        enabled: root.settings-transport-editable
+                                            && !root.operation-busy
+                                            && root.settings-sam-host != "";
+                                        clicked => { root.set-sam-host(root.settings-sam-host); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    height: 30px;
+                                    spacing: 6px;
+                                    Text {
+                                        width: 28px;
+                                        text: "Port";
+                                        color: #87959a;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                    LineEdit {
+                                        height: 28px;
+                                        text <=> root.settings-sam-port;
+                                        placeholder-text: "7656";
+                                        input-type: InputType.number;
+                                        enabled: root.settings-transport-editable && !root.operation-busy;
+                                        accepted(value) => { root.set-sam-port(value); }
+                                    }
+                                    CommandButton {
+                                        width: 64px;
+                                        text: "Save";
+                                        enabled: root.settings-transport-editable
+                                            && !root.operation-busy
+                                            && root.settings-sam-port != "";
+                                        clicked => { root.set-sam-port(root.settings-sam-port); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    height: 30px;
+                                    spacing: 6px;
+                                    CommandButton {
+                                        width: 88px;
+                                        text: root.settings-sam-test-running ? "Testing..." : "Test SAM";
+                                        enabled: !root.operation-busy && !root.settings-sam-test-running;
+                                        clicked => { root.test-sam(); }
+                                    }
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: root.settings-sam-test-status;
+                                        color: root.settings-sam-test-tone == 3 ? #df7c73
+                                            : root.settings-sam-test-tone == 1 ? #70c990
+                                            : #dce5e7;
+                                        font-size: 11px;
+                                        horizontal-alignment: right;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
-                            LineEdit {
-                                height: 28px;
-                                text <=> root.settings-sam-host;
-                                placeholder-text: "127.0.0.1";
-                                enabled: root.settings-transport-editable && !root.operation-busy;
-                                accepted(value) => { root.set-sam-host(value); }
+
+                            Rectangle { width: 1px; vertical-stretch: 1; background: #344148; }
+
+                            VerticalLayout {
+                                horizontal-stretch: 3;
+                                alignment: start;
+                                spacing: 8px;
+                                Text {
+                                    height: 18px;
+                                    text: "Tunnel defaults";
+                                    color: #87959a;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                HorizontalLayout {
+                                    height: 30px;
+                                    spacing: 6px;
+                                    Text {
+                                        text: "Length";
+                                        color: #87959a;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    CompactButton {
+                                        width: 34px;
+                                        text: "-";
+                                        enabled: root.settings-transport-editable
+                                            && !root.operation-busy
+                                            && root.settings-tunnel-length > 1;
+                                        clicked => {
+                                            root.settings-tunnel-length = root.settings-tunnel-length - 1;
+                                        }
+                                    }
+                                    Text {
+                                        width: 24px;
+                                        text: "" + root.settings-tunnel-length;
+                                        color: #dce5e7;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    CompactButton {
+                                        width: 34px;
+                                        text: "+";
+                                        enabled: root.settings-transport-editable
+                                            && !root.operation-busy
+                                            && root.settings-tunnel-length < 4;
+                                        clicked => {
+                                            root.settings-tunnel-length = root.settings-tunnel-length + 1;
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    height: 30px;
+                                    spacing: 6px;
+                                    Text {
+                                        text: "Quantity";
+                                        color: #87959a;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    CompactButton {
+                                        width: 34px;
+                                        text: "-";
+                                        enabled: root.settings-transport-editable
+                                            && !root.operation-busy
+                                            && root.settings-tunnel-quantity > 1;
+                                        clicked => {
+                                            root.settings-tunnel-quantity = root.settings-tunnel-quantity - 1;
+                                        }
+                                    }
+                                    Text {
+                                        width: 24px;
+                                        text: "" + root.settings-tunnel-quantity;
+                                        color: #dce5e7;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    CompactButton {
+                                        width: 34px;
+                                        text: "+";
+                                        enabled: root.settings-transport-editable
+                                            && !root.operation-busy
+                                            && root.settings-tunnel-quantity < 5;
+                                        clicked => {
+                                            root.settings-tunnel-quantity = root.settings-tunnel-quantity + 1;
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 30px;
+                                    background: transparent;
+                                    CommandButton {
+                                        y: (parent.height - self.height) / 2;
+                                        width: parent.width;
+                                        text: "Save defaults";
+                                        enabled: root.settings-transport-editable && !root.operation-busy;
+                                        clicked => {
+                                            root.set-default-tunnels(
+                                                root.settings-tunnel-length,
+                                                root.settings-tunnel-quantity
+                                            );
+                                        }
+                                    }
+                                }
                             }
-                            CommandButton {
-                                width: 72px;
-                                text: "Save";
-                                enabled: root.settings-transport-editable
-                                    && !root.operation-busy
-                                    && root.settings-sam-host != "";
-                                clicked => { root.set-sam-host(root.settings-sam-host); }
-                            }
-                        }
-                        HorizontalLayout {
-                            height: 30px;
-                            spacing: 8px;
-                            Text {
-                                width: 112px;
-                                text: "SAM port";
-                                color: #87959a;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                            LineEdit {
-                                height: 28px;
-                                text <=> root.settings-sam-port;
-                                placeholder-text: "7656";
-                                input-type: InputType.number;
-                                enabled: root.settings-transport-editable && !root.operation-busy;
-                                accepted(value) => { root.set-sam-port(value); }
-                            }
-                            CommandButton {
-                                width: 72px;
-                                text: "Save";
-                                enabled: root.settings-transport-editable
-                                    && !root.operation-busy
-                                    && root.settings-sam-port != "";
-                                clicked => { root.set-sam-port(root.settings-sam-port); }
+
+                            Rectangle { width: 1px; vertical-stretch: 1; background: #344148; }
+
+                            VerticalLayout {
+                                horizontal-stretch: 4;
+                                alignment: start;
+                                spacing: 8px;
+                                Text {
+                                    height: 18px;
+                                    text: "SAM monitoring";
+                                    color: #87959a;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                HorizontalLayout {
+                                    height: 30px;
+                                    spacing: 6px;
+                                    liveness-checkbox := CheckBox {
+                                        horizontal-stretch: 1;
+                                        text: "Automatic SAM liveness monitoring";
+                                        font-size: 11px;
+                                        checked: root.settings-sam-liveness-enabled;
+                                        enabled: !root.operation-busy;
+                                        toggled => { root.set-sam-liveness(liveness-checkbox.checked); }
+                                    }
+                                    Text {
+                                        text: root.settings-sam-monitor-status;
+                                        color: root.settings-sam-monitor-tone == 3 ? #df7c73
+                                            : root.settings-sam-monitor-tone == 2 ? #d5aa64
+                                            : root.settings-sam-monitor-tone == 1 ? #70c990
+                                            : #dce5e7;
+                                        font-size: 11px;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    height: 30px;
+                                    failure-checkbox := CheckBox {
+                                        horizontal-stretch: 1;
+                                        text: "Gracefully shut down if SAM becomes unavailable";
+                                        font-size: 11px;
+                                        checked: root.settings-sam-shutdown-on-failure;
+                                        enabled: !root.operation-busy;
+                                        toggled => { root.set-sam-failure-action(failure-checkbox.checked); }
+                                    }
+                                }
+                                Rectangle { height: 30px; background: transparent; }
                             }
                         }
 
-                        Rectangle { height: 1px; background: #344148; }
-
-                        HorizontalLayout {
-                            height: 28px;
-                            spacing: 8px;
-                            Text {
-                                width: 112px;
-                                text: "Tunnel length";
-                                color: #87959a;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                            CompactButton {
-                                width: 34px;
-                                text: "-";
-                                enabled: root.settings-transport-editable
-                                    && !root.operation-busy
-                                    && root.settings-tunnel-length > 1;
-                                clicked => {
-                                    root.settings-tunnel-length = root.settings-tunnel-length - 1;
-                                }
-                            }
-                            Text {
-                                width: 28px;
-                                text: "" + root.settings-tunnel-length;
-                                color: #dce5e7;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            CompactButton {
-                                width: 34px;
-                                text: "+";
-                                enabled: root.settings-transport-editable
-                                    && !root.operation-busy
-                                    && root.settings-tunnel-length < 4;
-                                clicked => {
-                                    root.settings-tunnel-length = root.settings-tunnel-length + 1;
-                                }
-                            }
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                        }
-                        HorizontalLayout {
-                            height: 28px;
-                            spacing: 8px;
-                            Text {
-                                width: 112px;
-                                text: "Tunnel quantity";
-                                color: #87959a;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                            CompactButton {
-                                width: 34px;
-                                text: "-";
-                                enabled: root.settings-transport-editable
-                                    && !root.operation-busy
-                                    && root.settings-tunnel-quantity > 1;
-                                clicked => {
-                                    root.settings-tunnel-quantity = root.settings-tunnel-quantity - 1;
-                                }
-                            }
-                            Text {
-                                width: 28px;
-                                text: "" + root.settings-tunnel-quantity;
-                                color: #dce5e7;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            CompactButton {
-                                width: 34px;
-                                text: "+";
-                                enabled: root.settings-transport-editable
-                                    && !root.operation-busy
-                                    && root.settings-tunnel-quantity < 5;
-                                clicked => {
-                                    root.settings-tunnel-quantity = root.settings-tunnel-quantity + 1;
-                                }
-                            }
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                            CommandButton {
-                                width: 112px;
-                                text: "Save defaults";
-                                enabled: root.settings-transport-editable && !root.operation-busy;
-                                clicked => {
-                                    root.set-default-tunnels(
-                                        root.settings-tunnel-length,
-                                        root.settings-tunnel-quantity
-                                    );
-                                }
-                            }
-                        }
-
-                        Rectangle { height: 1px; background: #344148; }
-
-                        liveness-checkbox := CheckBox {
-                            text: "Automatic SAM liveness monitoring";
-                            font-size: 12px;
-                            checked: root.settings-sam-liveness-enabled;
-                            enabled: !root.operation-busy;
-                            toggled => { root.set-sam-liveness(liveness-checkbox.checked); }
-                        }
-                        failure-checkbox := CheckBox {
-                            text: "Gracefully shut down if SAM becomes unavailable";
-                            font-size: 12px;
-                            checked: root.settings-sam-shutdown-on-failure;
-                            enabled: !root.operation-busy;
-                            toggled => { root.set-sam-failure-action(failure-checkbox.checked); }
-                        }
-
-                        HorizontalLayout {
-                            height: 26px;
-                            Text { text: "Monitor"; color: #87959a; font-size: 12px; }
-                            Text {
-                                text: root.settings-sam-monitor-status;
-                                color: root.settings-sam-monitor-tone == 3 ? #df7c73
-                                    : root.settings-sam-monitor-tone == 2 ? #d5aa64
-                                    : root.settings-sam-monitor-tone == 1 ? #70c990
-                                    : #dce5e7;
-                                font-size: 12px;
-                                horizontal-alignment: right;
-                            }
-                        }
-                        HorizontalLayout {
-                            height: 28px;
-                            spacing: 8px;
-                            Text { text: "Manual test"; color: #87959a; font-size: 12px; }
-                            Text {
-                                text: root.settings-sam-test-status;
-                                color: root.settings-sam-test-tone == 3 ? #df7c73
-                                    : root.settings-sam-test-tone == 1 ? #70c990
-                                    : #dce5e7;
-                                font-size: 12px;
-                                horizontal-alignment: right;
-                            }
-                            CommandButton {
-                                width: 88px;
-                                text: root.settings-sam-test-running ? "Testing..." : "Test SAM";
-                                enabled: !root.operation-busy && !root.settings-sam-test-running;
-                                clicked => { root.test-sam(); }
-                            }
+                        if root.settings-sam-monitor-detail != "": Text {
+                            text: root.settings-sam-monitor-detail;
+                            color: root.settings-sam-monitor-tone == 3 ? #df7c73 : #d5aa64;
+                            font-size: 11px;
+                            wrap: word-wrap;
                         }
 
                         Rectangle { height: 1px; background: #344148; }
@@ -1786,41 +2400,47 @@ export component AppWindow inherits Window {
                             wrap: word-wrap;
                         }
                         HorizontalLayout {
-                            height: 30px;
+                            height: 32px;
                             spacing: 6px;
-                            CommandButton {
-                                text: "Create backup";
+                            DataActionButton {
+                                horizontal-stretch: 1;
+                                label: "Create backup";
+                                selected: root.settings-data-action == 1;
                                 enabled: root.settings-transport-editable && !root.operation-busy;
                                 clicked => { root.begin-settings-data-action(1); }
                             }
-                            CommandButton {
-                                text: "Restore backup";
+                            DataActionButton {
+                                horizontal-stretch: 1;
+                                label: "Restore backup";
+                                selected: root.settings-data-action == 2;
                                 enabled: root.settings-transport-editable && !root.operation-busy;
                                 clicked => { root.begin-settings-data-action(2); }
                             }
-                            CommandButton {
-                                text: "Import contact";
+                            DataActionButton {
+                                horizontal-stretch: 1;
+                                label: "Import contact";
+                                selected: root.settings-data-action == 3;
                                 enabled: root.settings-transport-editable && !root.operation-busy;
                                 clicked => { root.begin-settings-data-action(3); }
                             }
-                            CommandButton {
-                                text: "Wipe all data";
+                            DataActionButton {
+                                horizontal-stretch: 1;
+                                label: "Wipe all data";
+                                selected: root.settings-data-action == 4;
+                                danger: true;
                                 enabled: root.settings-transport-editable && !root.operation-busy;
                                 clicked => { root.begin-settings-data-action(4); }
                             }
                         }
 
                         if root.settings-data-action != 0: Rectangle {
-                            height: root.settings-data-confirmation-visible ? 82px
-                                : root.settings-data-action == 4 ? 100px
-                                : root.settings-data-action == 3 ? 132px
-                                : 162px;
+                            height: data-panel-content.preferred-height;
                             background: #101619;
                             border-width: 1px;
                             border-color: root.settings-data-action == 4 ? #8b5d5d : #344148;
                             border-radius: 4px;
 
-                            VerticalLayout {
+                            data-panel-content := VerticalLayout {
                                 padding: 8px;
                                 spacing: 6px;
 
@@ -1831,12 +2451,26 @@ export component AppWindow inherits Window {
                                     wrap: word-wrap;
                                 }
                                 if root.settings-data-confirmation-visible: HorizontalLayout {
-                                    height: 28px;
+                                    height: 30px;
                                     spacing: 6px;
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
-                                    CommandButton {
+                                    if root.settings-data-action != 4: CommandButton {
                                         width: 72px;
-                                        text: "Confirm";
+                                        text: root.settings-data-action == 2 ? "Restore" : "Import";
+                                        enabled: !root.operation-busy;
+                                        clicked => {
+                                            root.confirm-settings-data-action(
+                                                root.settings-data-action,
+                                                true
+                                            );
+                                        }
+                                    }
+                                    if root.settings-data-action == 4: DataActionButton {
+                                        width: 72px;
+                                        height: 28px;
+                                        label-size: 11px;
+                                        label: "Wipe";
+                                        danger: true;
                                         enabled: !root.operation-busy;
                                         clicked => {
                                             root.confirm-settings-data-action(
@@ -1909,14 +2543,12 @@ export component AppWindow inherits Window {
                                     enabled: !root.operation-busy;
                                 }
                                 if !root.settings-data-confirmation-visible: HorizontalLayout {
-                                    height: 28px;
+                                    height: 30px;
                                     spacing: 6px;
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
                                     CommandButton {
                                         width: 92px;
                                         text: root.settings-data-action == 1 ? "Create"
-                                            : root.settings-data-action == 2 ? "Continue"
-                                            : root.settings-data-action == 3 ? "Inspect"
                                             : "Continue";
                                         enabled: !root.operation-busy;
                                         clicked => {
@@ -1971,6 +2603,8 @@ export component AppWindow inherits Window {
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                                 CommandButton {
                                     width: 92px;
+                                    min-height: 28px;
+                                    max-height: 28px;
                                     text: "Back to chats";
                                     enabled: !root.operation-busy;
                                     clicked => {
@@ -1986,7 +2620,12 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 height: 22px;
                                 spacing: 8px;
-                                Text { text: "P"; color: #70c990; font-size: 12px; vertical-alignment: center; }
+                                Text {
+                                    text: "Persistent";
+                                    color: #70c990;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
                                 Text {
                                     text: root.selected-contact-pinned ? "Locked" : "Unlocked";
                                     color: root.selected-contact-pinned ? #70c990 : #87959a;
@@ -2069,6 +2708,12 @@ export component AppWindow inherits Window {
                                     clicked => { root.contact-confirmation = 1; }
                                 }
                             }
+                            if root.contact-confirmation == 1: InspectorConfirmation {
+                                message: "Clear all retained text history?";
+                                controls-enabled: !root.operation-busy;
+                                confirmed => { root.clear-contact-history(root.selected-contact); }
+                                cancelled => { root.contact-confirmation = 0; }
+                            }
 
                             Rectangle { height: 1px; background: #344148; }
                             Text {
@@ -2081,7 +2726,7 @@ export component AppWindow inherits Window {
                                 spacing: 6px;
                                 Text {
                                     text: "Length";
-                                    color: #d7e2e5;
+                                    color: #87959a;
                                     font-size: 11px;
                                     vertical-alignment: center;
                                 }
@@ -2120,7 +2765,7 @@ export component AppWindow inherits Window {
                                 spacing: 6px;
                                 Text {
                                     text: "Quantity";
-                                    color: #d7e2e5;
+                                    color: #87959a;
                                     font-size: 11px;
                                     vertical-alignment: center;
                                 }
@@ -2182,8 +2827,8 @@ export component AppWindow inherits Window {
                                 height: 20px;
                                 Text {
                                     text: "Deaddrop servers";
-                                    color: #d7e2e5;
-                                    font-size: 12px;
+                                    color: #87959a;
+                                    font-size: 11px;
                                     vertical-alignment: center;
                                 }
                                 Text {
@@ -2240,6 +2885,17 @@ export component AppWindow inherits Window {
                                     && root.selected-contact-deaddrop-removable;
                                 clicked => { root.contact-confirmation = 2; }
                             }
+                            if root.contact-confirmation == 2: InspectorConfirmation {
+                                message: "Remove the selected deaddrop server?";
+                                controls-enabled: !root.operation-busy;
+                                confirmed => {
+                                    root.remove-contact-deaddrop(
+                                        root.selected-contact,
+                                        root.selected-contact-deaddrop
+                                    );
+                                }
+                                cancelled => { root.contact-confirmation = 0; }
+                            }
 
                             Rectangle { height: 1px; background: #344148; }
                             CommandButton {
@@ -2252,7 +2908,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                             if root.contact-export-visible: Rectangle {
-                                height: 194px;
+                                height: 124px;
                                 background: #101619;
                                 border-width: 1px;
                                 border-color: #344148;
@@ -2277,29 +2933,35 @@ export component AppWindow inherits Window {
                                             clicked => { root.choose-contact-export-path(); }
                                         }
                                     }
-                                    LineEdit {
-                                        height: 28px;
-                                        text <=> root.contact-export-passphrase;
-                                        input-type: InputType.password;
-                                        placeholder-text: "Encryption passphrase";
-                                        enabled: !root.operation-busy;
-                                    }
-                                    LineEdit {
-                                        height: 28px;
-                                        text <=> root.contact-export-passphrase-confirm;
-                                        input-type: InputType.password;
-                                        placeholder-text: "Confirm encryption passphrase";
-                                        enabled: !root.operation-busy;
-                                    }
-                                    contact-export-history-checkbox := CheckBox {
-                                        text: "Include retained text history";
-                                        font-size: 11px;
-                                        checked <=> root.contact-export-history;
-                                        enabled: !root.operation-busy;
+                                    HorizontalLayout {
+                                        height: 30px;
+                                        spacing: 6px;
+                                        LineEdit {
+                                            width: (root.context-inspector-width - 46px) / 2;
+                                            height: 28px;
+                                            text <=> root.contact-export-passphrase;
+                                            input-type: InputType.password;
+                                            placeholder-text: "Encryption passphrase";
+                                            enabled: !root.operation-busy;
+                                        }
+                                        LineEdit {
+                                            width: (root.context-inspector-width - 46px) / 2;
+                                            height: 28px;
+                                            text <=> root.contact-export-passphrase-confirm;
+                                            input-type: InputType.password;
+                                            placeholder-text: "Confirm passphrase";
+                                            enabled: !root.operation-busy;
+                                        }
                                     }
                                     HorizontalLayout {
                                         height: 28px;
                                         spacing: 6px;
+                                        contact-export-history-checkbox := CheckBox {
+                                            text: "Include history";
+                                            font-size: 11px;
+                                            checked <=> root.contact-export-history;
+                                            enabled: !root.operation-busy;
+                                        }
                                         Rectangle { horizontal-stretch: 1; background: transparent; }
                                         CommandButton {
                                             width: 72px;
@@ -2343,55 +3005,19 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            if root.contact-confirmation != 0: Rectangle {
-                                height: 58px;
-                                background: #101619;
-                                border-width: 1px;
-                                border-color: #8b5d5d;
-                                border-radius: 4px;
-                                HorizontalLayout {
-                                    padding-left: 6px;
-                                    padding-right: 6px;
-                                    spacing: 6px;
-                                    Text {
-                                        text: root.contact-confirmation == 1
-                                            ? "Clear all retained text history?"
-                                            : root.contact-confirmation == 2
-                                                ? "Remove the selected deaddrop server?"
-                                            : root.contact-confirmation == 3
-                                                ? "Reset trust, offline state, history, and deaddrop statistics?"
-                                            : "Delete this contact and its retained history?";
-                                        color: #d7e2e5;
-                                        font-size: 10px;
-                                        wrap: word-wrap;
-                                        vertical-alignment: center;
-                                    }
-                                    CompactButton {
-                                        width: 40px;
-                                        text: "Yes";
-                                        enabled: !root.operation-busy;
-                                        clicked => {
-                                            if root.contact-confirmation == 1 {
-                                                root.clear-contact-history(root.selected-contact);
-                                            } else if root.contact-confirmation == 2 {
-                                                root.remove-contact-deaddrop(
-                                                    root.selected-contact,
-                                                    root.selected-contact-deaddrop
-                                                );
-                                            } else if root.contact-confirmation == 3 {
-                                                root.reset-contact(root.selected-contact);
-                                            } else if root.contact-confirmation == 4 {
-                                                root.delete-contact(root.selected-contact);
-                                            }
-                                        }
-                                    }
-                                    CompactButton {
-                                        width: 40px;
-                                        text: "No";
-                                        enabled: !root.operation-busy;
-                                        clicked => { root.contact-confirmation = 0; }
+                            if root.contact-confirmation == 3 || root.contact-confirmation == 4: InspectorConfirmation {
+                                message: root.contact-confirmation == 3
+                                    ? "Reset trust, offline state, history, and deaddrop statistics?"
+                                    : "Delete this contact and its retained history?";
+                                controls-enabled: !root.operation-busy;
+                                confirmed => {
+                                    if root.contact-confirmation == 3 {
+                                        root.reset-contact(root.selected-contact);
+                                    } else {
+                                        root.delete-contact(root.selected-contact);
                                     }
                                 }
+                                cancelled => { root.contact-confirmation = 0; }
                             }
                         }
                     }
@@ -2406,77 +3032,70 @@ export component AppWindow inherits Window {
                         clip: true;
 
                         VerticalLayout {
-                            padding-top: 18px;
-                            padding-bottom: 18px;
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 10px;
+                            padding: 12px;
+                            spacing: 7px;
 
                         HorizontalLayout {
                             height: 32px;
                             Text {
                                 text: root.group-detail-name;
                                 color: #edf3f4;
-                                font-size: 18px;
+                                font-size: 16px;
                                 overflow: elide;
                                 vertical-alignment: center;
                             }
                             Rectangle { horizontal-stretch: 1; background: transparent; }
                             CommandButton {
-                                width: 110px;
+                                width: 92px;
+                                min-height: 28px;
+                                max-height: 28px;
                                 text: "Back to chats";
                                 enabled: !root.operation-busy;
                                 clicked => {
                                     root.group-details-visible = false;
                                     root.group-confirmation = 0;
+                                    root.group-invite-private-mode = false;
+                                    root.private-request-input = "";
+                                    root.generated-group-material-label = "";
+                                    root.generated-group-material = "";
                                 }
                             }
                         }
 
                         HorizontalLayout {
-                            height: 24px;
-                            spacing: 14px;
+                            height: 22px;
+                            spacing: 8px;
                             Text {
                                 text: root.group-detail-role;
                                 color: root.selected-group-owner ? #70c990 : #47bfd1;
-                                font-size: 12px;
+                                font-size: 11px;
                                 vertical-alignment: center;
                             }
                             Text {
                                 text: root.group-detail-roster;
                                 color: #87959a;
-                                font-size: 12px;
+                                font-size: 11px;
                                 vertical-alignment: center;
                             }
                             Text {
                                 text: root.selected-group-active ? "Open" : "Closed";
                                 color: root.selected-group-active ? #70c990 : #87959a;
-                                font-size: 12px;
+                                font-size: 11px;
                                 vertical-alignment: center;
                             }
                             if !root.selected-group-owner: Text {
                                 text: root.group-owner-ready ? "Owner online" : "Owner unavailable";
                                 color: root.group-owner-ready ? #70c990 : #d6a85f;
-                                font-size: 12px;
+                                font-size: 11px;
                                 vertical-alignment: center;
                             }
                             if root.group-leave-pending: Text {
                                 text: "Leave pending";
                                 color: #d6a85f;
-                                font-size: 12px;
+                                font-size: 11px;
                                 vertical-alignment: center;
                             }
                             Rectangle { horizontal-stretch: 1; background: transparent; }
-                        }
-
-                        AddressCopyControl {
-                            width: root.context-inspector-width - 24px;
-                            prefix: "";
-                            address: root.group-detail-local-b32;
-                            accent: #70c990;
-                            compact: true;
-                            full-address: true;
-                            activated => { root.copy-address(root.group-detail-local-b32, true); }
                         }
 
                         HorizontalLayout {
@@ -2507,10 +3126,21 @@ export component AppWindow inherits Window {
                             }
                         }
 
+                        AddressCopyControl {
+                            width: root.context-inspector-width - 24px;
+                            prefix: "";
+                            address: root.group-detail-local-b32;
+                            accent: #70c990;
+                            compact: true;
+                            full-address: true;
+                            activated => { root.copy-address(root.group-detail-local-b32, true); }
+                        }
+
                         HorizontalLayout {
                             height: 30px;
-                            spacing: 8px;
+                            spacing: 6px;
                             CommandButton {
+                                width: (root.context-inspector-width - 30px) / 2;
                                 text: root.group-history-enabled ? "History: On" : "History: Off";
                                 enabled: !root.operation-busy && root.group-confirmation == 0;
                                 clicked => {
@@ -2521,16 +3151,95 @@ export component AppWindow inherits Window {
                                 }
                             }
                             CommandButton {
+                                width: (root.context-inspector-width - 30px) / 2;
                                 text: "Clear history";
                                 enabled: !root.operation-busy && root.group-confirmation == 0;
                                 clicked => { root.group-confirmation = 6; }
                             }
                         }
 
+                        if root.selected-group-owner: Rectangle {
+                            height: 1px;
+                            background: #344148;
+                        }
+                        if root.selected-group-owner: Text {
+                            text: "Invitations";
+                            color: #87959a;
+                            font-size: 11px;
+                        }
+                        if root.selected-group-owner: GroupInvitationModeSelector {
+                            width: root.context-inspector-width - 24px;
+                            private-mode <=> root.group-invite-private-mode;
+                            enabled: !root.operation-busy && root.group-confirmation == 0;
+                            selected(private-mode) => {
+                                root.group-invite-private-mode = private-mode;
+                                root.private-request-input = "";
+                                root.generated-group-material-label = "";
+                                root.generated-group-material = "";
+                            }
+                        }
+                        if root.selected-group-owner && !root.group-invite-private-mode: CommandButton {
+                            height: 30px;
+                            text: "Generate public invitation";
+                            enabled: !root.operation-busy && root.group-confirmation == 0;
+                            clicked => {
+                                root.generate-public-invite(root.selected-group);
+                            }
+                        }
+                        if root.selected-group-owner && root.group-invite-private-mode: HorizontalLayout {
+                            height: 30px;
+                            spacing: 6px;
+                            LineEdit {
+                                width: (root.context-inspector-width - 30px) / 2;
+                                height: 28px;
+                                text <=> root.private-request-input;
+                                placeholder-text: "Paste private request";
+                                enabled: !root.operation-busy && root.group-confirmation == 0;
+                                accepted(value) => {
+                                    if value != "" {
+                                        root.answer-private-request(root.selected-group, value);
+                                    }
+                                }
+                            }
+                            CommandButton {
+                                width: (root.context-inspector-width - 30px) / 2;
+                                text: "Approve request";
+                                enabled: !root.operation-busy
+                                    && root.group-confirmation == 0
+                                    && root.private-request-input != "";
+                                clicked => {
+                                    root.answer-private-request(
+                                        root.selected-group,
+                                        root.private-request-input
+                                    );
+                                }
+                            }
+                        }
+                        if root.selected-group-owner: AddressCopyControl {
+                            width: root.context-inspector-width - 24px;
+                            height: 30px;
+                            prefix: "";
+                            address: root.generated-group-material;
+                            display-address: root.generated-group-material == ""
+                                ? (root.group-invite-private-mode
+                                    ? "Private invitation"
+                                    : "Public invitation")
+                                : root.generated-group-material;
+                            accent: #47bfd1;
+                            compact: true;
+                            tooltip: root.group-invite-private-mode
+                                ? "Click to copy. Return this invitation to the requester."
+                                : "Click to copy. Share carefully; the first valid recipient can redeem it.";
+                            activated => {
+                                root.copy-group-material(root.generated-group-material);
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #344148; }
                         Text {
                             text: "Members";
-                            color: #d7e2e5;
-                            font-size: 12px;
+                            color: #87959a;
+                            font-size: 11px;
                         }
                         ListView {
                             vertical-stretch: 1;
@@ -2545,17 +3254,20 @@ export component AppWindow inherits Window {
                             }
                         }
 
+                        CommandButton {
+                            text: "Remove member";
+                            enabled: !root.operation-busy
+                                && root.group-confirmation == 0
+                                && root.selected-group-member-removable;
+                            clicked => { root.group-confirmation = 1; }
+                        }
+
+                        Rectangle { height: 1px; background: #344148; }
                         HorizontalLayout {
-                            height: 32px;
-                            spacing: 8px;
-                            CommandButton {
-                                text: "Remove member";
-                                enabled: !root.operation-busy
-                                    && root.group-confirmation == 0
-                                    && root.selected-group-member-removable;
-                                clicked => { root.group-confirmation = 1; }
-                            }
+                            height: 30px;
+                            spacing: 6px;
                             if !root.selected-group-owner: CommandButton {
+                                width: (root.context-inspector-width - 30px) / 2;
                                 text: "Leave group";
                                 enabled: !root.operation-busy
                                     && root.group-confirmation == 0
@@ -2565,6 +3277,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                             if root.selected-group-owner: CommandButton {
+                                width: (root.context-inspector-width - 30px) / 2;
                                 text: "Dissolve group";
                                 enabled: !root.operation-busy
                                     && root.group-confirmation == 0
@@ -2572,7 +3285,8 @@ export component AppWindow inherits Window {
                                 clicked => { root.group-confirmation = 4; }
                             }
                             CommandButton {
-                                text: "Delete local data";
+                                width: (root.context-inspector-width - 30px) / 2;
+                                text: "Delete locally";
                                 enabled: !root.operation-busy
                                     && root.group-confirmation == 0
                                     && !root.selected-group-active;
@@ -2580,213 +3294,35 @@ export component AppWindow inherits Window {
                             }
                         }
 
-                            if root.group-confirmation != 0: Rectangle {
-                            height: 48px;
-                            background: #101619;
-                            border-width: 1px;
-                            border-color: root.group-confirmation >= 3 ? #8b5d5d : #46565c;
-                            border-radius: 4px;
-
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 6px;
-                                spacing: 8px;
-                                Text {
-                                    text: root.group-confirmation == 1 ? "Remove the selected member?"
-                                        : root.group-confirmation == 2 ? "Request removal from the owner's signed roster?"
-                                        : root.group-confirmation == 3 ? "Owner unavailable. Leave locally with stale peers possible?"
-                                        : root.group-confirmation == 4 ? "Dissolve this group for connected participants?"
-                                        : root.group-confirmation == 5 ? "Delete only this installation's local group data?"
-                                        : "Clear all retained group text history?";
-                                    color: #d7e2e5;
-                                    font-size: 11px;
-                                    wrap: word-wrap;
-                                    vertical-alignment: center;
-                                }
-                                CompactButton {
-                                    width: 44px;
-                                    text: "Yes";
-                                    enabled: !root.operation-busy;
-                                    clicked => {
-                                        if root.group-confirmation == 1 {
-                                            root.remove-group-member(
-                                                root.selected-group,
-                                                root.selected-group-member
-                                            );
-                                        } else if root.group-confirmation == 2 {
-                                            root.leave-group(root.selected-group, false);
-                                        } else if root.group-confirmation == 3 {
-                                            root.leave-group(root.selected-group, true);
-                                        } else if root.group-confirmation == 4 {
-                                            root.dissolve-group(root.selected-group);
-                                        } else if root.group-confirmation == 5 {
-                                            root.delete-group(root.selected-group);
-                                        } else {
-                                            root.clear-group-history(root.selected-group);
-                                        }
+                            if root.group-confirmation != 0: InspectorConfirmation {
+                                message: root.group-confirmation == 1 ? "Remove the selected member?"
+                                    : root.group-confirmation == 2 ? "Request removal from the owner's signed roster?"
+                                    : root.group-confirmation == 3 ? "Owner unavailable. Leave locally with stale peers possible?"
+                                    : root.group-confirmation == 4 ? "Dissolve this group for connected participants?"
+                                    : root.group-confirmation == 5 ? "Delete this group's local record and history without notifying members?"
+                                    : "Clear all retained group text history?";
+                                controls-enabled: !root.operation-busy;
+                                outline-color: root.group-confirmation >= 3 ? #8b5d5d : #46565c;
+                                confirmed => {
+                                    if root.group-confirmation == 1 {
+                                        root.remove-group-member(
+                                            root.selected-group,
+                                            root.selected-group-member
+                                        );
+                                    } else if root.group-confirmation == 2 {
+                                        root.leave-group(root.selected-group, false);
+                                    } else if root.group-confirmation == 3 {
+                                        root.leave-group(root.selected-group, true);
+                                    } else if root.group-confirmation == 4 {
+                                        root.dissolve-group(root.selected-group);
+                                    } else if root.group-confirmation == 5 {
+                                        root.delete-group(root.selected-group);
+                                    } else {
+                                        root.clear-group-history(root.selected-group);
                                     }
                                 }
-                                CompactButton {
-                                    width: 44px;
-                                    text: "No";
-                                    enabled: !root.operation-busy;
-                                    clicked => { root.group-confirmation = 0; }
-                                }
+                                cancelled => { root.group-confirmation = 0; }
                             }
-                            }
-                        }
-                    }
-
-                    if root.group-invites-visible
-                        && !root.group-details-visible: Rectangle {
-                        min-width: root.context-inspector-side-by-side ? root.context-inspector-width : 0px;
-                        preferred-width: root.context-inspector-side-by-side ? root.context-inspector-width : 0px;
-                        max-width: root.context-inspector-side-by-side ? root.context-inspector-width : root.width;
-                        horizontal-stretch: root.context-inspector-side-by-side ? 0 : 1;
-                        height: workspace.height;
-                        background: #151d21;
-                        clip: true;
-
-                        VerticalLayout {
-                            padding: 18px;
-                            spacing: 12px;
-
-                        HorizontalLayout {
-                            height: 32px;
-                            Text {
-                                text: "Group invitations";
-                                color: #edf3f4;
-                                font-size: 18px;
-                                vertical-alignment: center;
-                            }
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                            CommandButton {
-                                width: 110px;
-                                text: "Back to chats";
-                                enabled: !root.operation-busy;
-                                clicked => {
-                                    root.group-invites-visible = false;
-                                    root.private-request-input = "";
-                                    root.group-invite-input = "";
-                                    root.generated-group-material-label = "";
-                                    root.generated-group-material = "";
-                                }
-                            }
-                        }
-
-                        Text {
-                            text: root.selected-group >= 0
-                                ? (root.selected-group-owner
-                                    ? (root.selected-group-active
-                                        ? "Close the selected group before issuing owner invitations."
-                                        : "Owner-issued actions use the selected closed group.")
-                                    : "This installation is a participant; owner-issued actions are unavailable.")
-                                : "Select a group for owner-issued invitations. Import remains available.";
-                            color: #87959a;
-                            font-size: 11px;
-                        }
-
-                        HorizontalLayout {
-                            height: 32px;
-                            spacing: 8px;
-                            CommandButton {
-                                text: "Generate public invite";
-                                enabled: !root.operation-busy
-                                    && root.selected-group >= 0
-                                    && root.selected-group-owner
-                                    && !root.selected-group-active;
-                                clicked => { root.generate-public-invite(root.selected-group); }
-                            }
-                            CommandButton {
-                                text: "Generate private request";
-                                enabled: !root.operation-busy;
-                                clicked => { root.generate-private-request(); }
-                            }
-                        }
-
-                        Text {
-                            text: "Answer a recipient's private request";
-                            color: #d7e2e5;
-                            font-size: 12px;
-                        }
-                        HorizontalLayout {
-                            height: 32px;
-                            spacing: 8px;
-                            LineEdit {
-                                text <=> root.private-request-input;
-                                placeholder-text: "Paste private request";
-                                enabled: !root.operation-busy;
-                                accepted(value) => {
-                                    root.answer-private-request(root.selected-group, value);
-                                }
-                            }
-                            CommandButton {
-                                width: 120px;
-                                text: "Answer request";
-                                enabled: !root.operation-busy
-                                    && root.selected-group >= 0
-                                    && root.selected-group-owner
-                                    && !root.selected-group-active
-                                    && root.private-request-input != "";
-                                clicked => {
-                                    root.answer-private-request(
-                                        root.selected-group,
-                                        root.private-request-input
-                                    );
-                                }
-                            }
-                        }
-
-                        Text {
-                            text: root.generated-group-material-label == ""
-                                ? "Generated material"
-                                : root.generated-group-material-label;
-                            color: #d7e2e5;
-                            font-size: 12px;
-                        }
-                        HorizontalLayout {
-                            height: 32px;
-                            spacing: 8px;
-                            LineEdit {
-                                text: root.generated-group-material;
-                                placeholder-text: "Nothing generated";
-                                read-only: true;
-                            }
-                            CompactButton {
-                                width: 80px;
-                                text: "Copy";
-                                enabled: root.generated-group-material != "";
-                                clicked => {
-                                    root.copy-group-material(root.generated-group-material);
-                                }
-                            }
-                        }
-
-                        Rectangle { height: 1px; background: #344148; }
-
-                        Text {
-                            text: "Join using a public or private invite";
-                            color: #d7e2e5;
-                            font-size: 12px;
-                        }
-                        HorizontalLayout {
-                            height: 32px;
-                            spacing: 8px;
-                            LineEdit {
-                                text <=> root.group-invite-input;
-                                placeholder-text: "Paste group invite";
-                                enabled: !root.operation-busy;
-                                accepted(value) => { root.import-group-invite(value); }
-                            }
-                            CompactButton {
-                                width: 80px;
-                                text: "Import";
-                                enabled: !root.operation-busy && root.group-invite-input != "";
-                                clicked => { root.import-group-invite(root.group-invite-input); }
-                            }
-                        }
-
-                            Rectangle { vertical-stretch: 1; background: transparent; }
                         }
                     }
 
@@ -2820,6 +3356,7 @@ export component AppWindow inherits Window {
                                 for session[index] in root.sessions: SessionTab {
                                     entry: session;
                                     selected: root.selected-session == index;
+                                    attention-pulse: root.attention-pulse;
                                     activated => {
                                         root.selected-session = index;
                                         root.message-follow-bottom = true;
@@ -3073,8 +3610,56 @@ export component AppWindow inherits Window {
                             }
 
                             VerticalLayout {
-                                height: root.reply-visible ? 122px : 92px;
+                                height: 92px
+                                    + (root.reply-visible ? 30px : 0px)
+                                    + (root.pasted-image-visible ? 74px : 0px);
                                 spacing: 4px;
+
+                                if root.pasted-image-visible: Rectangle {
+                                    height: 70px;
+                                    background: #121a1e;
+                                    border-width: 1px;
+                                    border-color: #3c4a50;
+                                    border-radius: 3px;
+                                    clip: true;
+
+                                    HorizontalLayout {
+                                        padding: 5px;
+                                        spacing: 8px;
+                                        Image {
+                                            width: 86px;
+                                            source: root.pasted-image-preview;
+                                            image-fit: contain;
+                                        }
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            alignment: center;
+                                            spacing: 2px;
+                                            Text {
+                                                text: "Pasted image";
+                                                color: #d7e2e5;
+                                                font-size: 11px;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: root.pasted-image-detail;
+                                                color: #87959a;
+                                                font-size: 10px;
+                                                overflow: elide;
+                                            }
+                                        }
+                                        CompactButton {
+                                            width: 54px;
+                                            min-height: 22px;
+                                            max-height: 22px;
+                                            text: "Cancel";
+                                            enabled: !root.operation-busy;
+                                            clicked => {
+                                                root.cancel-pasted-image(root.selected-session);
+                                            }
+                                        }
+                                    }
+                                }
 
                                 if root.reply-visible: Rectangle {
                                     height: 26px;
@@ -3118,6 +3703,17 @@ export component AppWindow inherits Window {
                                                 ? "Type an offline multiline message"
                                                 : "Type a multiline message")
                                             : "Messaging is unavailable in this session";
+                                        key-pressed(event) => {
+                                            if root.sessions[root.selected-session].can-send-image
+                                                && ((event.modifiers.control || event.modifiers.meta)
+                                                && !event.modifiers.alt
+                                                && (event.text == "v" || event.text == "V")) {
+                                                root.paste-clipboard-image(root.selected-session)
+                                                    ? accept : reject
+                                            } else {
+                                                reject
+                                            }
+                                        }
                                     }
                                     VerticalLayout {
                                         width: 86px;
@@ -3128,10 +3724,14 @@ export component AppWindow inherits Window {
                                             text: "Send";
                                             enabled: !root.operation-busy
                                                 && root.sessions[root.selected-session].can-send
-                                                && root.message-input != "";
+                                                && (root.message-input != "" || root.pasted-image-visible);
                                             clicked => {
                                                 root.message-follow-bottom = true;
-                                                root.send-text(root.selected-session, root.message-input);
+                                                if root.pasted-image-visible {
+                                                    root.send-pasted-image(root.selected-session);
+                                                } else {
+                                                    root.send-text(root.selected-session, root.message-input);
+                                                }
                                             }
                                         }
                                     }
@@ -3150,7 +3750,7 @@ export component AppWindow inherits Window {
                                 || !root.sessions[root.selected-session].opening
                                 || root.sessions[root.selected-session].can-close: Rectangle {
                                 height: root.rendezvous-visible
-                                    ? (root.rendezvous-output != "" ? 154px : 116px)
+                                    ? 138px
                                     : (root.connect-input-visible && root.sessions[root.selected-session].can-connect)
                                     || (root.lock-confirmation-visible && root.sessions[root.selected-session].can-lock)
                                     ? 78px : 40px;
@@ -3162,12 +3762,14 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     padding: 4px;
                                     spacing: 4px;
+                                    alignment: root.rendezvous-visible ? start : center;
                                     HorizontalLayout {
-                                        height: 30px;
+                                        height: 28px;
                                         spacing: 6px;
-                                        if root.sessions[root.selected-session].can-connect && !root.rendezvous-visible: CommandButton {
+                                        if root.sessions[root.selected-session].can-connect: CommandButton {
                                             text: "Connect";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => {
@@ -3178,6 +3780,7 @@ export component AppWindow inherits Window {
                                         if root.sessions[root.selected-session].can-accept: CommandButton {
                                             text: "Accept";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => { root.accept-session(root.selected-session); }
@@ -3185,6 +3788,7 @@ export component AppWindow inherits Window {
                                         if root.sessions[root.selected-session].can-decline: CommandButton {
                                             text: "Decline";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => { root.decline-session(root.selected-session); }
@@ -3192,6 +3796,7 @@ export component AppWindow inherits Window {
                                         if root.sessions[root.selected-session].can-disconnect: CommandButton {
                                             text: "Disconnect";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => { root.disconnect-session(root.selected-session); }
@@ -3199,6 +3804,7 @@ export component AppWindow inherits Window {
                                         if root.sessions[root.selected-session].can-send-image: CommandButton {
                                             text: "Send Image";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => {
@@ -3209,6 +3815,7 @@ export component AppWindow inherits Window {
                                         if root.sessions[root.selected-session].can-send-file: CommandButton {
                                             text: "Send File";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => {
@@ -3219,6 +3826,7 @@ export component AppWindow inherits Window {
                                         if root.sessions[root.selected-session].can-lock: CommandButton {
                                             text: "Lock peer";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => {
@@ -3229,6 +3837,7 @@ export component AppWindow inherits Window {
                                         if root.sessions[root.selected-session].can-enter-offline: CommandButton {
                                             text: "Offline";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => { root.enter-offline(root.selected-session); }
@@ -3236,13 +3845,15 @@ export component AppWindow inherits Window {
                                         if root.sessions[root.selected-session].can-leave-offline: CommandButton {
                                             text: "Online";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => { root.leave-offline(root.selected-session); }
                                         }
                                         if root.sessions[root.selected-session].can-rendezvous: CommandButton {
-                                            text: root.rendezvous-visible ? "Hide Rendezvous" : "Rendezvous";
+                                            text: "Rendezvous";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => {
@@ -3255,6 +3866,7 @@ export component AppWindow inherits Window {
                                         if root.sessions[root.selected-session].has-details: CommandButton {
                                             text: "Details";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => {
@@ -3264,6 +3876,7 @@ export component AppWindow inherits Window {
                                         if !root.sessions[root.selected-session].opening: CommandButton {
                                             text: root.session-logs-visible ? "Hide Logs" : "Show Logs";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => {
@@ -3271,82 +3884,20 @@ export component AppWindow inherits Window {
                                             }
                                         }
                                         if root.sessions[root.selected-session].can-close: CommandButton {
-                                            text: "Close";
+                                            text: "Close session";
                                             enabled: !root.operation-busy
+                                                && !root.rendezvous-visible
                                                 && !root.connect-input-visible
                                                 && !root.lock-confirmation-visible;
                                             clicked => { root.close-session(root.selected-session); }
                                         }
                                     }
 
-                                    if root.rendezvous-visible: HorizontalLayout {
-                                        height: 30px;
-                                        spacing: 6px;
-                                        CommandButton {
-                                            text: "Generate Request";
-                                            enabled: !root.operation-busy;
-                                            clicked => { root.generate-rendezvous-request(root.selected-session); }
-                                        }
-                                        CommandButton {
-                                            text: "Revoke";
-                                            enabled: !root.operation-busy;
-                                            clicked => { root.revoke-rendezvous(root.selected-session); }
-                                        }
-                                    }
-
-                                    if root.rendezvous-visible: HorizontalLayout {
-                                        height: 32px;
-                                        spacing: 6px;
-                                        LineEdit {
-                                            text <=> root.rendezvous-input;
-                                            placeholder-text: "Paste rendezvous request or response";
-                                            enabled: !root.operation-busy;
-                                            accepted(value) => {
-                                                root.submit-rendezvous-input(root.selected-session, value);
-                                            }
-                                        }
-                                        CompactButton {
-                                            width: 62px;
-                                            text: "Process";
-                                            enabled: !root.operation-busy && root.rendezvous-input != "";
-                                            clicked => {
-                                                root.submit-rendezvous-input(root.selected-session, root.rendezvous-input);
-                                            }
-                                        }
-                                        CompactButton {
-                                            width: 52px;
-                                            text: "Clear";
-                                            enabled: !root.operation-busy;
-                                            clicked => { root.rendezvous-input = ""; }
-                                        }
-                                    }
-
-                                    if root.rendezvous-visible && root.rendezvous-output != "": HorizontalLayout {
-                                        height: 32px;
-                                        spacing: 6px;
-                                        Text {
-                                            width: 62px;
-                                            text: root.rendezvous-output-label;
-                                            color: #87959a;
-                                            font-size: 11px;
-                                            vertical-alignment: center;
-                                        }
-                                        LineEdit {
-                                            text: root.rendezvous-output;
-                                            read-only: true;
-                                        }
-                                        CompactButton {
-                                            width: 52px;
-                                            text: "Copy";
-                                            enabled: !root.operation-busy;
-                                            clicked => { root.copy-rendezvous-output(root.rendezvous-output); }
-                                        }
-                                    }
-
                                     if root.connect-input-visible && root.sessions[root.selected-session].can-connect: HorizontalLayout {
-                                        height: 32px;
+                                        height: 28px;
                                         spacing: 6px;
                                         LineEdit {
+                                            height: 28px;
                                             text <=> root.peer-address-input;
                                             placeholder-text: "Peer b32 address";
                                             read-only: root.sessions[root.selected-session].peer-pinned;
@@ -3358,6 +3909,7 @@ export component AppWindow inherits Window {
                                         }
                                         CompactButton {
                                             width: 44px;
+                                            height: 28px;
                                             text: "OK";
                                             enabled: !root.operation-busy && root.peer-address-input != "";
                                             clicked => {
@@ -3367,6 +3919,7 @@ export component AppWindow inherits Window {
                                         }
                                         CompactButton {
                                             width: 58px;
+                                            height: 28px;
                                             text: "Cancel";
                                             enabled: !root.operation-busy;
                                             clicked => { root.connect-input-visible = false; }
@@ -3398,6 +3951,183 @@ export component AppWindow inherits Window {
                                             clicked => { root.lock-confirmation-visible = false; }
                                         }
                                         Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    }
+                                }
+
+                                if root.rendezvous-visible: Rectangle {
+                                    x: 4px;
+                                    y: 36px;
+                                    width: parent.width - 8px;
+                                    height: 92px;
+                                    background: transparent;
+                                    clip: true;
+
+                                    VerticalLayout {
+                                        spacing: 4px;
+
+                                        HorizontalLayout {
+                                            height: 28px;
+                                            spacing: 6px;
+                                            RendezvousModeSelector {
+                                                min-width: 0px;
+                                                preferred-width: 0px;
+                                                horizontal-stretch: 1;
+                                                answer-mode <=> root.rendezvous-answer-mode;
+                                                enabled: !root.operation-busy;
+                                                selected(answer-mode) => {
+                                                    root.rendezvous-answer-mode = answer-mode;
+                                                    root.rendezvous-input = "";
+                                                }
+                                            }
+                                            CommandButton {
+                                                width: 140px;
+                                                text: "Close";
+                                                enabled: !root.operation-busy;
+                                                clicked => {
+                                                    root.toggle-rendezvous(root.selected-session);
+                                                }
+                                            }
+                                        }
+
+                                        if !root.rendezvous-answer-mode: HorizontalLayout {
+                                            height: 28px;
+                                            spacing: 6px;
+                                            CommandButton {
+                                                width: 140px;
+                                                text: "Generate Request";
+                                                enabled: !root.operation-busy;
+                                                clicked => { root.generate-rendezvous-request(root.selected-session); }
+                                            }
+                                            Rectangle {
+                                                height: 28px;
+                                                min-width: 0px;
+                                                preferred-width: 0px;
+                                                horizontal-stretch: 1;
+                                                background: transparent;
+
+                                                AddressCopyControl {
+                                                    width: parent.width;
+                                                    height: parent.height;
+                                                    prefix: "";
+                                                    address: root.rendezvous-output-label == "Request"
+                                                        ? root.rendezvous-output : "";
+                                                    display-address: root.rendezvous-output-label == "Request"
+                                                        ? root.rendezvous-output : "Request to send to peer";
+                                                    accent: #47bfd1;
+                                                    compact: true;
+                                                    tooltip: "Click to copy. Send this rendezvous request to the peer.";
+                                                    activated => {
+                                                        if root.rendezvous-output-label == "Request" {
+                                                            root.copy-rendezvous-output(root.rendezvous-output);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            CommandButton {
+                                                width: 140px;
+                                                text: "Revoke Rendezvous";
+                                                enabled: !root.operation-busy
+                                                    && root.rendezvous-output-label == "Request"
+                                                    && root.rendezvous-output != "";
+                                                clicked => { root.revoke-rendezvous(root.selected-session); }
+                                            }
+                                        }
+
+                                        if !root.rendezvous-answer-mode: HorizontalLayout {
+                                            height: 28px;
+                                            spacing: 6px;
+                                            LineEdit {
+                                                height: 28px;
+                                                min-width: 0px;
+                                                preferred-width: 0px;
+                                                horizontal-stretch: 1;
+                                                text <=> root.rendezvous-input;
+                                                placeholder-text: "Paste response received from peer";
+                                                enabled: !root.operation-busy;
+                                                accepted(value) => {
+                                                    root.submit-rendezvous-input(root.selected-session, value, false);
+                                                }
+                                            }
+                                            CommandButton {
+                                                width: 140px;
+                                                text: "Connect";
+                                                enabled: !root.operation-busy && root.rendezvous-input != "";
+                                                clicked => {
+                                                    root.submit-rendezvous-input(
+                                                        root.selected-session,
+                                                        root.rendezvous-input,
+                                                        false
+                                                    );
+                                                }
+                                            }
+                                        }
+
+                                        if root.rendezvous-answer-mode: HorizontalLayout {
+                                            height: 28px;
+                                            spacing: 6px;
+                                            LineEdit {
+                                                height: 28px;
+                                                min-width: 0px;
+                                                preferred-width: 0px;
+                                                horizontal-stretch: 1;
+                                                text <=> root.rendezvous-input;
+                                                placeholder-text: "Paste request received from peer";
+                                                enabled: !root.operation-busy;
+                                                accepted(value) => {
+                                                    root.submit-rendezvous-input(root.selected-session, value, true);
+                                                }
+                                            }
+                                            CommandButton {
+                                                width: 140px;
+                                                text: "Answer Request";
+                                                enabled: !root.operation-busy && root.rendezvous-input != "";
+                                                clicked => {
+                                                    root.submit-rendezvous-input(
+                                                        root.selected-session,
+                                                        root.rendezvous-input,
+                                                        true
+                                                    );
+                                                }
+                                            }
+                                        }
+
+                                        if root.rendezvous-answer-mode: HorizontalLayout {
+                                            height: 28px;
+                                            spacing: 6px;
+                                            Rectangle {
+                                                height: 28px;
+                                                min-width: 0px;
+                                                preferred-width: 0px;
+                                                horizontal-stretch: 1;
+                                                background: transparent;
+
+                                                AddressCopyControl {
+                                                    width: parent.width;
+                                                    height: parent.height;
+                                                    prefix: "";
+                                                    address: root.rendezvous-output-label == "Response"
+                                                        ? root.rendezvous-output : "";
+                                                    display-address: root.rendezvous-output-label == "Response"
+                                                        ? root.rendezvous-output : "Response to return to requester";
+                                                    accent: #47bfd1;
+                                                    compact: true;
+                                                    tooltip: "Click to copy. Return this rendezvous response to the requester.";
+                                                    activated => {
+                                                        if root.rendezvous-output-label == "Response" {
+                                                            root.copy-rendezvous-output(root.rendezvous-output);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            CommandButton {
+                                                width: 140px;
+                                                text: "Revoke Rendezvous";
+                                                enabled: !root.operation-busy
+                                                    && root.rendezvous-output-label == "Response"
+                                                    && root.rendezvous-output != "";
+                                                clicked => { root.revoke-rendezvous(root.selected-session); }
+                                            }
+                                        }
                                     }
                                 }
                             }

@@ -1,3 +1,7 @@
+//! Per-conversation terminal presentation state.
+//!
+
+
 use crate::image_media::{
     IMAGE_RENDER_WIDTH, MAX_IMAGE_LINES, RenderedImage, RenderedImageCell, prepare_image_path,
     render_image_bytes,
@@ -346,6 +350,7 @@ pub enum OfflineToggleDisposition {
 
 #[derive(Debug, Default)]
 pub struct Workspace {
+
     tabs: Vec<ConversationTab>,
     active: Option<usize>,
     tab_spinner_frame: usize,
@@ -2157,6 +2162,7 @@ impl Workspace {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn push_message_input(&mut self, character: char) {
         let mut encoded = [0; 4];
         self.insert_message_input(character.encode_utf8(&mut encoded));
@@ -2189,16 +2195,6 @@ impl Workspace {
         editor.input(input);
         if message_editor_bytes(editor) > limit {
             *editor = previous;
-        }
-    }
-
-    pub fn pop_message_input(&mut self) {
-        if let Some(input) = self
-            .active
-            .and_then(|index| self.tabs.get_mut(index))
-            .and_then(|tab| tab.message_input.as_mut())
-        {
-            input.delete_char();
         }
     }
 
@@ -3772,15 +3768,20 @@ impl ConversationTab {
     }
 
     fn rendered_label(&self, spinner_frame: usize, group_connected: bool) -> String {
+        let display_label = if matches!(&self.key, ConversationKey::Group(_)) {
+            format!("#{}", self.label)
+        } else {
+            self.label.clone()
+        };
         let mut label = match &self.phase {
-            ConversationPhase::Failed(_) => format!("{} !", self.label),
+            ConversationPhase::Failed(_) => format!("{display_label} !"),
             ConversationPhase::Opening => format!(
                 "{} {}",
-                self.label,
+                display_label,
                 TAB_OPENING_SPINNER[spinner_frame % TAB_OPENING_SPINNER.len()]
             ),
-            ConversationPhase::Closing => format!("{} ...", self.label),
-            _ => self.label.clone(),
+            ConversationPhase::Closing => format!("{display_label} ..."),
+            _ => display_label,
         };
         if let Some(marker) = self.activity_marker(spinner_frame, group_connected) {
             label.push(' ');
@@ -5261,11 +5262,11 @@ mod tests {
             "Group",
         );
         workspace.tabs[1].phase = ConversationPhase::Standby;
-        assert_eq!(workspace.tabs[1].rendered_label(0, false), "Group");
-        assert_eq!(workspace.tabs[1].rendered_label(0, true), "Group ◆");
+        assert_eq!(workspace.tabs[1].rendered_label(0, false), "#Group");
+        assert_eq!(workspace.tabs[1].rendered_label(0, true), "#Group ◆");
 
         workspace.tabs[1].presentation.unread_text = true;
-        assert_eq!(workspace.tabs[1].rendered_label(0, true), "Group ◆ +");
+        assert_eq!(workspace.tabs[1].rendered_label(0, true), "#Group ◆ +");
     }
 
     #[test]
@@ -5337,14 +5338,14 @@ mod tests {
             reason: "unreachable".into(),
         });
 
-        assert_eq!(workspace.tabs[0].rendered_label(0, false), "Alpha !");
-        assert_eq!(workspace.tabs[1].rendered_label(0, false), "Beta");
+        assert_eq!(workspace.tabs[0].rendered_label(0, false), "#Alpha !");
+        assert_eq!(workspace.tabs[1].rendered_label(0, false), "#Beta");
         assert!(workspace.has_warning_attention());
 
         workspace.select_previous();
         workspace.mark_active_viewed();
         assert!(!workspace.has_warning_attention());
-        assert_eq!(workspace.tabs[0].rendered_label(0, false), "Alpha");
+        assert_eq!(workspace.tabs[0].rendered_label(0, false), "#Alpha");
     }
 
     #[test]

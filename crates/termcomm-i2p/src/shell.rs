@@ -1,3 +1,8 @@
+//! Root navigation, action dispatch, and rendering for the Ratatui terminal client.
+//!
+//! Every state changing action is submitted to the
+//! runtime. Runtime is responsible for authorization and lifecycle validation.
+
 use crate::cli::StartupOptions;
 use crate::terminal::ClipboardCopyMethod;
 use crate::workspace::{
@@ -293,7 +298,7 @@ impl GroupBrowserAction {
             Self::RemoveSelectedMember => "Remove selected member",
             Self::LeaveGroup => "Leave group",
             Self::DissolveGroup => "Dissolve group",
-            Self::DeleteLocalGroup => "Delete local group",
+            Self::DeleteLocalGroup => "Delete locally",
         }
     }
 
@@ -2333,7 +2338,7 @@ impl ShellState {
         }
         match action {
             GroupBrowserAction::GeneratePublicInvite | GroupBrowserAction::AnswerPrivateRequest => {
-                group.is_some_and(|group| !group.active)
+                group.is_some_and(|group| group.owner)
             }
             GroupBrowserAction::CopyPublicInvite => group.is_some_and(|group| {
                 self.generated_public_invite
@@ -2390,11 +2395,6 @@ impl ShellState {
         });
     }
 
-    fn group_member_removal_available(&self, driver: &ApplicationDriver) -> bool {
-        let group = selected_group(driver, self.selected_group.as_ref());
-        self.group_member_removal_available_for(group.as_ref())
-    }
-
     fn group_member_removal_available_for(&self, group: Option<&GroupSummary>) -> bool {
         let Some(group) = group else {
             return false;
@@ -2418,11 +2418,13 @@ impl ShellState {
             return;
         };
         if group.active {
-            self.status = "Close the group conversation before deleting its local data.".into();
+            self.status =
+                "Close the group conversation before deleting its local record and history."
+                    .into();
             return;
         }
         self.status = format!(
-            "Delete local group {}? Other participants and their group records are unaffected. y/n",
+            "Delete {} locally with its retained history? Other participants are not notified. y/n",
             group.display_name
         );
         self.group_confirmation = Some(GroupConfirmation::DeleteLocalGroup {
@@ -2514,7 +2516,7 @@ impl ShellState {
                             self.clear_generated_group_material(&group_id);
                             self.selected_group = None;
                             self.selected_group_member = 0;
-                            self.status = format!("Deleted local group: {group_name}");
+                            self.status = format!("Deleted group locally with its history: {group_name}");
                         }
                         Ok(_) => self.status = "Unexpected group-delete result.".into(),
                         Err(error) => self.status = error.to_string(),
@@ -2568,14 +2570,16 @@ impl ShellState {
                                     self.clear_generated_group_material(&group_id);
                                     self.selected_group = None;
                                     self.selected_group_member = 0;
-                                    self.status = format!("Left local group: {group_name}");
+                                    self.status = format!(
+                                        "Left group and deleted its local record and history: {group_name}"
+                                    );
                                 }
                                 Ok(CommToolsCommandResult::GroupLocalLeaveStarted {
                                     deleted_immediately: false,
                                 }) => {
                                     self.clear_generated_group_material(&group_id);
                                     self.status = format!(
-                                        "Closing {group_name}; local group data will be deleted after shutdown."
+                                        "Closing {group_name}; its local record and history will be deleted after shutdown."
                                     );
                                 }
                                 Ok(_) => {
@@ -2597,14 +2601,16 @@ impl ShellState {
                             self.clear_generated_group_material(&group_id);
                             self.selected_group = None;
                             self.selected_group_member = 0;
-                            self.status = format!("Dissolved local group: {group_name}");
+                            self.status = format!(
+                                "Dissolved {group_name}; its local record and history were deleted."
+                            );
                         }
                         Ok(CommToolsCommandResult::GroupDissolutionStarted {
                             deleted_immediately: false,
                         }) => {
                             self.clear_generated_group_material(&group_id);
                             self.status = format!(
-                                "Dissolving {group_name}; local data will be deleted after shutdown."
+                                "Dissolving {group_name}; its local record and history will be deleted after shutdown."
                             );
                         }
                         Ok(_) => self.status = "Unexpected group-dissolution result.".into(),

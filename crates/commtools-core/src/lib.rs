@@ -1,5 +1,11 @@
 #![forbid(unsafe_code)]
 
+//! Presentation-independent CommTools protocol, identity, session, storage, and vault engines.
+//!
+//! Frontends/UI should normally use `commtools-runtime` rather than coordinating these modules
+//! directly. Keeping UI policy outside this crate preserves the same security framework(!!!) across
+//! terminal, desktop, and other clients.
+
 pub mod application;
 pub mod config;
 pub mod constants;

@@ -14,7 +14,7 @@ const CAROL_DESTINATION: &str = "Z2hp";
 
 #[test]
 fn outbound_and_inbound_peers_complete_the_same_secure_session() {
-    let (mut alice, mut bob, alice_connection, bob_connection, ready_at) = ready_pair();
+    let (alice, mut bob, alice_connection, bob_connection, ready_at) = ready_pair();
 
     assert_eq!(alice.phase(), OneToOnePhase::Ready);
     assert_eq!(bob.phase(), OneToOnePhase::Ready);

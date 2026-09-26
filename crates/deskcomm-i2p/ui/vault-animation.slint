@@ -1,0 +1,82 @@
+export struct VaultAnimationNode {
+    x: float,
+    y: float,
+    size: float,
+    state: int,
+}
+
+export component VaultAnimation inherits Rectangle {
+    in property <[VaultAnimationNode]> nodes;
+    in property <string> background-edges;
+    in property <string> active-edges;
+    property <color> canvas-color: #0d1316;
+    property <color> ambient-edge-color: #34454c;
+    property <color> active-edge-color: #70c990;
+    property <color> default-node-color: #6687a1;
+    property <color> sender-node-color: #70c990;
+    property <color> receiver-node-color: #e17878;
+    property <float> canvas-scale: min(root.width / 800px, root.height / 500px);
+
+    background: root.canvas-color;
+    clip: true;
+
+    canvas := Rectangle {
+        width: 800px * root.canvas-scale;
+        height: 500px * root.canvas-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: transparent;
+
+        Path {
+            width: parent.width;
+            height: parent.height;
+            stroke: root.ambient-edge-color;
+            stroke-width: 0.8px;
+            commands: root.background-edges;
+            viewbox-width: 800;
+            viewbox-height: 500;
+        }
+
+        Path {
+            width: parent.width;
+            height: parent.height;
+            stroke: root.active-edge-color;
+            stroke-width: 1.8px;
+            commands: root.active-edges;
+            viewbox-width: 800;
+            viewbox-height: 500;
+
+            animate stroke { duration: 200ms; easing: ease-in-out; }
+        }
+
+        for node in root.nodes: Rectangle {
+            property <color> node-color: node.state == 1 ? root.sender-node-color
+                : node.state == 2 ? root.receiver-node-color
+                : root.default-node-color;
+
+            x: node.x * root.canvas-scale * 1px - self.width / 2;
+            y: node.y * root.canvas-scale * 1px - self.height / 2;
+            width: node.size * root.canvas-scale * 1px;
+            height: node.size * root.canvas-scale * 1px;
+            background: self.node-color;
+            border-radius: self.width / 2;
+
+            animate background { duration: 150ms; easing: ease-in-out; }
+            animate width { duration: 250ms; easing: ease-out-back; }
+            animate height { duration: 250ms; easing: ease-out-back; }
+
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: parent.width * 1.5;
+                height: parent.height * 1.5;
+                border-radius: self.width / 2;
+                background: parent.node-color.transparentize(0.55);
+
+                animate background { duration: 300ms; easing: ease-in-out; }
+                animate width { duration: 250ms; easing: ease-out; }
+                animate height { duration: 250ms; easing: ease-out; }
+            }
+        }
+    }
+}

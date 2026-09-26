@@ -518,14 +518,6 @@ impl SamClient {
         Ok(SamStreamParts { reader, writer })
     }
 
-    pub(crate) async fn stream_accept(
-        &self,
-        cancellation: &CancellationToken,
-    ) -> Result<AcceptedIncoming, SamError> {
-        self.stream_accept_with_armed_signal(cancellation, None)
-            .await
-    }
-
     pub(crate) async fn stream_accept_with_armed_signal(
         &self,
         cancellation: &CancellationToken,
@@ -931,14 +923,6 @@ async fn connect_cancelled(
         result = TcpStream::connect((endpoint.host(), endpoint.port())) => Ok(result?),
         _ = cancellation.cancelled() => Err(SamError::Cancelled),
     }
-}
-
-async fn hello(
-    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
-) -> Result<(), SamError> {
-    send_hello(writer).await?;
-    read_reply(reader).await?.require_ok("HELLO")
 }
 
 async fn hello_cancelled(

@@ -846,6 +846,7 @@ impl OneToOneSession {
         if matches!(message_type, MessageType::S | MessageType::K) {
             return Err(OneToOneError::ReservedControlFrame(message_type));
         }
+        // Delivery acknowledgements are deliberately small, validated control payloads.
         if message_type == MessageType::D {
             validate_delivery_acknowledgement(plaintext)?;
             return Ok(Frame::new(message_type, message_id, plaintext));
@@ -883,6 +884,7 @@ impl OneToOneSession {
         if matches!(frame.message_type, MessageType::S | MessageType::K) {
             return Err(OneToOneError::ReservedControlFrame(frame.message_type));
         }
+
         if frame.message_type == MessageType::D {
             validate_delivery_acknowledgement(&frame.payload)?;
             return Ok(frame.clone());

@@ -1,3 +1,7 @@
+//! Replicated offline blob transport over untrusted deaddrop servers.
+//!
+//! Servers see opaque bounded blobs and lookup keys.
+
 use crate::config::SamEndpoint;
 use crate::sam::{SamByteStream, SamError, SamSessionConfig, TunnelOptions};
 use crate::sam_runtime::SamRuntime;

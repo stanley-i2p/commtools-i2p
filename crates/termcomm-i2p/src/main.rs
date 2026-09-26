@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+//! Ratatui shell for the CommTools runtime.
+//!
+
+
 mod cli;
 mod gate;
 mod image_media;
@@ -137,6 +141,7 @@ async fn run_shell(
 }
 
 async fn shutdown_driver(driver: &mut ApplicationDriver) -> Result<(), AppError> {
+
     driver.dispatch_command(CommToolsCommand::BeginShutdown)?;
     while driver.application_phase() != ApplicationPhase::Stopped {
         if let FrontendEvent::Operation(RuntimeOperationEvent::Failed {

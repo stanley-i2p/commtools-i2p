@@ -1,3 +1,7 @@
+//! Group transport is a fan-out of independently authenticated peer connections.
+//!
+//! The owner-signed roster is authoritative for membership.
+
 use crate::constants::MAX_FRAME_PAYLOAD_SIZE;
 use crate::crypto::{CryptoError, SessionCrypto};
 use crate::group_roster::{
