@@ -1,9 +1,9 @@
 # CommTools-I2P
 
-This repository contains the CommTools core libraries and two applications built on top of them:
+This repository contains the CommTools core libraries and applications built on top of them:
 
-- **TermComm-I2P** - terminal client
-- **DeskComm-I2P** - Slint desktop client
+- **TermComm-I2P** - Ratatui based terminal client
+- **DeskComm-I2P** - Slint based desktop client
 
 ## Build TermComm-I2P
 
@@ -86,15 +86,15 @@ Available options:
 ```text
 TermComm-I2P (Ratatui)          DeskComm-I2P (Slint)
           \                           /
-           \  commands and events   /
+           \  commands and events    /
             v                       v
-              commtools-runtime
-       async lifecycle and orchestration
+              **commtools-runtime**
+       (async lifecycle and orchestration)
                        |
                        v
-                commtools-core
-       protocol, security, sessions, SAM,
-             vault and storage logic
+                **commtools-core**
+       (protocol, security, sessions, SAM,)
+             (vault and storage logic(
                        |
                        v
              I2P router and deaddrops
@@ -102,4 +102,4 @@ TermComm-I2P (Ratatui)          DeskComm-I2P (Slint)
 
 `commtools-core` contains the presentation-independent communication and security logic.
 `commtools-runtime` exposes that logic through typed commands, snapshots, and events. Each UI can
-therefore present a different interface while using the same underlying behavior and validation.
+therefore present a different interface while using the same underlying behavior.
