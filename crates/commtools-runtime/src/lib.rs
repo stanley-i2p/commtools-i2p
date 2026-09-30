@@ -1869,6 +1869,10 @@ impl ApplicationDriver {
         let now_ms = now_epoch_millis();
         let output = self.coordinator.tick(now_ms)?;
         self.process_output(output)?;
+        if self.shutdown_requested || self.coordinator.phase() != ApplicationPhase::Running {
+            self.reset_sam_monitor();
+            return Ok(());
+        }
         self.tick_file_offers(now_ms);
         if let Err(error) = self.flush_deaddrop_stats(false, now_ms) {
             self.push_failure(None, "save deaddrop profiles", error.to_string());
@@ -8795,6 +8799,22 @@ mod tests {
                 .expect("bootstrap plan");
 
         assert!(plan.sam_config.session_id().starts_with("deskcomm_chat_"));
+    }
+
+    #[test]
+    fn post_lock_tick_skips_maintenance_that_requires_the_unlocked_vault() {
+        let temp = TestDirectory::new("post-lock-maintenance");
+        let repository = test_vault_repository(temp.path());
+        let vault = repository.create(b"test passphrase").expect("create vault");
+        let mut driver = ApplicationDriver::new(vault);
+
+        driver.begin_shutdown().expect("lock idle driver");
+        assert_eq!(driver.application_phase(), ApplicationPhase::Stopped);
+        assert!(driver.vault().is_none());
+
+        driver
+            .tick()
+            .expect("post-lock tick must not access the removed vault");
     }
 
     #[test]

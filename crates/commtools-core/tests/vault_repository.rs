@@ -147,6 +147,145 @@ fn plaintext_recovery_state_is_not_overwritten_by_unlock() {
 }
 
 #[test]
+fn interrupted_plaintext_can_be_recovered_without_losing_newer_state() {
+    let temp = TestDirectory::new("recover-plaintext");
+    let repository = test_repository(temp.path());
+    repository
+        .create(b"passphrase")
+        .expect("create")
+        .lock()
+        .expect("initial lock");
+
+    let mut interrupted = repository.unlock(b"passphrase").expect("unlock");
+    let contact_id = ContactId::new("newer-contact").expect("contact id");
+    interrupted
+        .update(|snapshot| {
+            snapshot.contacts.insert(
+                contact_id.clone(),
+                ContactRecord::new(contact_id, "Newer Contact")?,
+            );
+            Ok(())
+        })
+        .expect("persist newer plaintext");
+    drop(interrupted);
+
+    let mut recovered = repository
+        .recover_existing_plaintext(b"passphrase")
+        .expect("recover plaintext");
+    assert!(
+        recovered
+            .snapshot()
+            .contacts
+            .values()
+            .any(|contact| contact.display_name == "Newer Contact")
+    );
+    recovered.lock().expect("lock recovered vault");
+
+    assert!(
+        repository
+            .unlock(b"passphrase")
+            .expect("unlock recovered generation")
+            .snapshot()
+            .contacts
+            .values()
+            .any(|contact| contact.display_name == "Newer Contact")
+    );
+}
+
+#[test]
+fn interrupted_plaintext_can_be_explicitly_discarded() {
+    let temp = TestDirectory::new("discard-plaintext");
+    let repository = test_repository(temp.path());
+    repository
+        .create(b"passphrase")
+        .expect("create")
+        .lock()
+        .expect("initial lock");
+
+    let mut interrupted = repository.unlock(b"passphrase").expect("unlock");
+    let contact_id = ContactId::new("discarded-contact").expect("contact id");
+    interrupted
+        .update(|snapshot| {
+            snapshot.contacts.insert(
+                contact_id.clone(),
+                ContactRecord::new(contact_id, "Discarded Contact")?,
+            );
+            Ok(())
+        })
+        .expect("persist plaintext to discard");
+    drop(interrupted);
+
+    assert!(matches!(
+        repository.discard_plaintext_and_unlock(b"wrong passphrase"),
+        Err(VaultError::AuthenticationFailed)
+    ));
+    assert!(
+        repository
+            .recover_existing_plaintext(b"passphrase")
+            .expect("plaintext remains after rejected discard")
+            .snapshot()
+            .contacts
+            .values()
+            .any(|contact| contact.display_name == "Discarded Contact")
+    );
+
+    let restored = repository
+        .discard_plaintext_and_unlock(b"passphrase")
+        .expect("restore encrypted generation");
+    assert!(restored.snapshot().contacts.is_empty());
+}
+
+#[test]
+fn plaintext_interrupted_before_first_lock_can_be_adopted_or_discarded() {
+    let adopted_temp = TestDirectory::new("adopt-initial-plaintext");
+    let adopted_repository = test_repository(adopted_temp.path());
+    let mut interrupted = adopted_repository
+        .create(b"original in-memory passphrase")
+        .expect("create plaintext tree");
+    let contact_id = ContactId::new("initial-contact").expect("contact id");
+    interrupted
+        .update(|snapshot| {
+            snapshot.contacts.insert(
+                contact_id.clone(),
+                ContactRecord::new(contact_id, "Initial Contact")?,
+            );
+            Ok(())
+        })
+        .expect("persist initial plaintext");
+    drop(interrupted);
+    assert!(!adopted_repository.exists().expect("inspect vault"));
+
+    let mut adopted = adopted_repository
+        .adopt_initial_plaintext(b"replacement passphrase")
+        .expect("adopt initial plaintext");
+    assert!(
+        adopted
+            .snapshot()
+            .contacts
+            .values()
+            .any(|contact| contact.display_name == "Initial Contact")
+    );
+    adopted.lock().expect("lock adopted plaintext");
+    assert!(
+        adopted_repository
+            .unlock(b"replacement passphrase")
+            .is_ok()
+    );
+
+    let discarded_temp = TestDirectory::new("discard-initial-plaintext");
+    let discarded_repository = test_repository(discarded_temp.path());
+    let interrupted = discarded_repository
+        .create(b"lost in-memory passphrase")
+        .expect("create plaintext tree");
+    drop(interrupted);
+
+    let replacement = discarded_repository
+        .discard_plaintext_and_create(b"new passphrase")
+        .expect("discard initial plaintext");
+    assert!(replacement.snapshot().contacts.is_empty());
+}
+
+#[test]
 fn vault_lease_excludes_a_second_process_owner() {
     let temp = TestDirectory::new("exclusive-lease");
     let repository = test_repository(temp.path());

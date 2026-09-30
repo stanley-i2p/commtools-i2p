@@ -347,6 +347,7 @@ export struct SessionItem {
     can-lock: bool,
     can-rendezvous: bool,
     rendezvous-authenticated: bool,
+    group-activity: string,
     history-enabled: bool,
     has-details: bool,
     opening: bool,
@@ -3405,6 +3406,11 @@ export component AppWindow inherits Window {
                                             spacing: 10px;
                                             SessionKindMarker {
                                                 label: root.sessions[root.selected-session].session-kind;
+                                            }
+                                            if root.sessions[root.selected-session].group-activity != "": StatusMarker {
+                                                horizontal-stretch: 0;
+                                                label: root.sessions[root.selected-session].group-activity;
+                                                tone: 2;
                                             }
                                             if root.sessions[root.selected-session].history-enabled: HistoryIndicator {
                                                 description: "Text history enabled";

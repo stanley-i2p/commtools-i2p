@@ -3061,6 +3061,21 @@ fn apply_snapshot(
         .iter()
         .map(|group| (group.id.clone(), group.history_enabled))
         .collect::<BTreeMap<_, _>>();
+    let group_activity = snapshot
+        .groups
+        .iter()
+        .map(|group| {
+            (
+                group.id.clone(),
+                group_activity_label(
+                    group.active,
+                    group.local_b32.is_some(),
+                    group.ready_member_count,
+                    group.members.len(),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let transient_labels = mappings.transient_labels.borrow().clone();
 
     let contact_count = snapshot.contacts.len();
@@ -3278,6 +3293,12 @@ fn apply_snapshot(
             let is_contact = matches!(&session.key, ManagedSessionKey::Contact(_));
             let is_one_to_one = is_one_to_one_key(&session.key);
             let is_group = matches!(&session.key, ManagedSessionKey::Group(_));
+            let group_activity = match &session.key {
+                ManagedSessionKey::Group(group_id) => {
+                    group_activity.get(group_id).cloned().unwrap_or_default()
+                }
+                _ => String::new(),
+            };
             let history_enabled = match &session.key {
                 ManagedSessionKey::Contact(contact_id) => contact_history_enabled
                     .get(contact_id)
@@ -3380,6 +3401,7 @@ fn apply_snapshot(
                     && !peer_pinned
                     && phase == Some(OneToOnePhase::Standby),
                 rendezvous_authenticated: rendezvous_authenticated.contains(&session.session_id),
+                group_activity: group_activity.into(),
                 history_enabled,
                 has_details: session_has_details(&session.key),
                 opening: false,
@@ -3443,6 +3465,7 @@ fn apply_snapshot(
             can_lock: false,
             can_rendezvous: false,
             rendezvous_authenticated: false,
+            group_activity: "".into(),
             history_enabled,
             has_details,
             opening: true,
@@ -5646,6 +5669,19 @@ fn session_kind(key: &ManagedSessionKey) -> &'static str {
         ManagedSessionKey::Transient(_) => "T",
         ManagedSessionKey::Group(_) => "G",
     }
+}
+
+fn group_activity_label(
+    active: bool,
+    initialized: bool,
+    ready_peer_count: usize,
+    total_members: usize,
+) -> String {
+    if !active || !initialized {
+        return String::new();
+    }
+    let active_members = ready_peer_count.saturating_add(1);
+    format!("Online {active_members}/{}", total_members.max(1))
 }
 
 fn session_has_details(key: &ManagedSessionKey) -> bool {
@@ -7878,6 +7914,19 @@ mod tests {
             ),
             "#Operations"
         );
+    }
+
+    #[test]
+    fn group_activity_counts_local_member_and_ready_peers() {
+        assert_eq!(group_activity_label(true, true, 0, 0), "Online 1/1");
+        assert_eq!(group_activity_label(true, true, 0, 4), "Online 1/4");
+        assert_eq!(group_activity_label(true, true, 2, 4), "Online 3/4");
+    }
+
+    #[test]
+    fn group_activity_is_hidden_until_the_group_is_initialized_and_open() {
+        assert_eq!(group_activity_label(false, true, 2, 4), "");
+        assert_eq!(group_activity_label(true, false, 2, 4), "");
     }
 
     #[test]

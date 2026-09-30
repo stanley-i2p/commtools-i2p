@@ -152,8 +152,18 @@ impl VaultRepository {
         sibling_with_suffix(&self.root, ".app.lock")
     }
 
+    fn restore_staging_path(&self) -> PathBuf {
+        sibling_with_suffix(&self.root, ".restore-staging")
+    }
+
+    fn unlock_staging_path(&self) -> PathBuf {
+        sibling_with_suffix(&self.root, ".unlock-staging")
+    }
+
     pub fn wipe_all(&self) -> Result<(), VaultError> {
         remove_path_if_exists(&self.root)?;
+        remove_path_if_exists(&self.unlock_staging_path())?;
+        remove_path_if_exists(&self.restore_staging_path())?;
         remove_path_if_exists(&self.vault_path())?;
         remove_path_if_exists(&sibling_with_suffix(&self.vault_path(), ".previous"))?;
         sync_parent(&self.root)
@@ -188,6 +198,8 @@ impl VaultRepository {
         if self.exists()? {
             return Err(VaultError::AlreadyExists);
         }
+        remove_path_if_exists(&self.unlock_staging_path())?;
+        remove_path_if_exists(&self.restore_staging_path())?;
         if directory_has_entries(&self.root)? {
             return Err(VaultError::PlaintextPresent);
         }
@@ -210,6 +222,8 @@ impl VaultRepository {
         if !vault_path.is_file() {
             return Err(VaultError::NotFound);
         }
+        remove_path_if_exists(&self.unlock_staging_path())?;
+        remove_path_if_exists(&self.restore_staging_path())?;
         if directory_has_entries(&self.root)? {
             return Err(VaultError::PlaintextPresent);
         }
@@ -217,7 +231,7 @@ impl VaultRepository {
         let encrypted = read_vault(&vault_path)?;
         let (archive, kdf) = decrypt_payload(&encrypted, passphrase)?;
         let archive = Zeroizing::new(archive);
-        let staging = sibling_with_suffix(&self.root, &format!(".unlock-{}", std::process::id()));
+        let staging = self.unlock_staging_path();
         remove_path_if_exists(&staging)?;
         create_secure_directory(&staging)?;
         let extraction = extract_tar_gz(&archive, &staging);
@@ -225,11 +239,17 @@ impl VaultRepository {
             let _ = remove_path_if_exists(&staging);
             return Err(error);
         }
-        validate_plaintext_tree(&staging)?;
+        if let Err(error) = validate_plaintext_tree(&staging) {
+            let _ = remove_path_if_exists(&staging);
+            return Err(error);
+        }
         if self.root.exists() {
             remove_path_if_exists(&self.root)?;
         }
-        fs::rename(&staging, &self.root).map_err(|error| io_error(&self.root, error))?;
+        if let Err(error) = fs::rename(&staging, &self.root) {
+            let _ = remove_path_if_exists(&staging);
+            return Err(io_error(&self.root, error));
+        }
         sync_parent(&self.root)?;
 
         let storage = StorageRepository::new(&self.root)?;
@@ -242,6 +262,143 @@ impl VaultRepository {
             kdf,
             dirty: false,
         })
+    }
+
+    /// Reopens a plaintext working tree left by an interrupted process.
+    ///
+    /// The existing encrypted container is authenticated first so arbitrary
+    /// plaintext cannot establish or change the vault passphrase.
+    pub fn recover_existing_plaintext(
+        &self,
+        passphrase: &[u8],
+    ) -> Result<UnlockedVault, VaultError> {
+        validate_passphrase(passphrase)?;
+        let vault_path = self.vault_path();
+        if !vault_path.is_file() {
+            return Err(VaultError::NotFound);
+        }
+        remove_path_if_exists(&self.unlock_staging_path())?;
+        remove_path_if_exists(&self.restore_staging_path())?;
+        if !directory_has_entries(&self.root)? {
+            return self.unlock(passphrase);
+        }
+
+        let encrypted = read_vault(&vault_path)?;
+        let (archive, kdf) = decrypt_payload(&encrypted, passphrase)?;
+        let _archive = Zeroizing::new(archive);
+        validate_plaintext_tree(&self.root)?;
+
+        let storage = StorageRepository::new(&self.root)?;
+        let snapshot = storage.load_or_empty()?;
+        Ok(UnlockedVault {
+            repository: self.clone(),
+            storage,
+            snapshot,
+            passphrase: Zeroizing::new(passphrase.to_vec()),
+            kdf,
+            dirty: false,
+        })
+    }
+
+    /// Adopts a valid plaintext working tree when the process was interrupted
+    /// before the first encrypted generation could be created.
+    pub fn adopt_initial_plaintext(
+        &self,
+        passphrase: &[u8],
+    ) -> Result<UnlockedVault, VaultError> {
+        validate_passphrase(passphrase)?;
+        if self.exists()? {
+            return Err(VaultError::AlreadyExists);
+        }
+        remove_path_if_exists(&self.unlock_staging_path())?;
+        remove_path_if_exists(&self.restore_staging_path())?;
+        validate_plaintext_tree(&self.root)?;
+
+        let storage = StorageRepository::new(&self.root)?;
+        let snapshot = storage.load_or_empty()?;
+        Ok(UnlockedVault {
+            repository: self.clone(),
+            storage,
+            snapshot,
+            passphrase: Zeroizing::new(passphrase.to_vec()),
+            kdf: self.creation_kdf,
+            dirty: false,
+        })
+    }
+
+    /// Discards an interrupted plaintext working tree and restores the last
+    /// authenticated encrypted generation.
+    pub fn discard_plaintext_and_unlock(
+        &self,
+        passphrase: &[u8],
+    ) -> Result<UnlockedVault, VaultError> {
+        validate_passphrase(passphrase)?;
+        let vault_path = self.vault_path();
+        if !vault_path.is_file() {
+            return Err(VaultError::NotFound);
+        }
+        remove_path_if_exists(&self.unlock_staging_path())?;
+
+        // Authenticate before performing the explicitly requested destructive step.
+        let encrypted = read_vault(&vault_path)?;
+        let (archive, kdf) = decrypt_payload(&encrypted, passphrase)?;
+        let archive = Zeroizing::new(archive);
+        let staging = self.restore_staging_path();
+        remove_path_if_exists(&staging)?;
+        create_secure_directory(&staging)?;
+        let extraction = extract_tar_gz(&archive, &staging);
+        if let Err(error) = extraction {
+            let _ = remove_path_if_exists(&staging);
+            return Err(error);
+        }
+        if let Err(error) = validate_plaintext_tree(&staging).and_then(|_| {
+            StorageRepository::new(&staging)?
+                .load_or_empty()
+                .map(|_| ())
+                .map_err(VaultError::from)
+        }) {
+            let _ = remove_path_if_exists(&staging);
+            return Err(error);
+        }
+
+        // The encrypted generation is usable; the user-approved discard can now occur.
+        if let Err(error) = remove_path_if_exists(&self.root) {
+            let _ = remove_path_if_exists(&staging);
+            return Err(error);
+        }
+        if let Err(error) = fs::rename(&staging, &self.root) {
+            let _ = remove_path_if_exists(&staging);
+            return Err(io_error(&self.root, error));
+        }
+        sync_parent(&self.root)?;
+
+        let storage = StorageRepository::new(&self.root)?;
+        let snapshot = storage.load_or_empty()?;
+        Ok(UnlockedVault {
+            repository: self.clone(),
+            storage,
+            snapshot,
+            passphrase: Zeroizing::new(passphrase.to_vec()),
+            kdf,
+            dirty: false,
+        })
+    }
+
+    /// Discards an interrupted pre-encryption working tree and creates a new,
+    /// empty vault with the supplied passphrase.
+    pub fn discard_plaintext_and_create(
+        &self,
+        passphrase: &[u8],
+    ) -> Result<UnlockedVault, VaultError> {
+        validate_passphrase(passphrase)?;
+        if self.exists()? {
+            return Err(VaultError::AlreadyExists);
+        }
+        remove_path_if_exists(&self.unlock_staging_path())?;
+        remove_path_if_exists(&self.restore_staging_path())?;
+        remove_path_if_exists(&self.root)?;
+        sync_parent(&self.root)?;
+        self.create(passphrase)
     }
 
     fn encrypt_plaintext(&self, passphrase: &[u8], kdf: VaultKdfParams) -> Result<(), VaultError> {
