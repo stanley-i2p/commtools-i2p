@@ -94,12 +94,12 @@ TermComm-I2P (Ratatui)          DeskComm-I2P (Slint)
                        v
                 **commtools-core**
        (protocol, security, sessions, SAM,)
-             (vault and storage logic(
+             (vault and storage logic)
                        |
                        v
-             I2P router and deaddrops
+  I2P router and DeadDrop server infrastructure
 ```
 
 `commtools-core` contains the presentation-independent communication and security logic.
 `commtools-runtime` exposes that logic through typed commands, snapshots, and events. Each UI can
-therefore present a different interface while using the same underlying behavior.
+therefore present a different interface while using the same underlying behaviour.
