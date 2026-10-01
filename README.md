@@ -15,7 +15,7 @@ cargo build --release -p termcomm-i2p
 
 The executable will be created at `target/release/termcomm-i2p`.
 
-[TermComm-I2P screenshot](screenshots/termcomm-i2p.png)
+![TermComm-I2P screenshot](screenshots/termcomm-i2p.png)
 
 Run the built application:
 
@@ -53,7 +53,7 @@ cargo build --release -p deskcomm-i2p
 
 The executable will be created at `target/release/deskcomm-i2p`.
 
-[DeskComm-I2P screenshot](screenshots/deskcomm-i2p.png)
+![DeskComm-I2P screenshot](screenshots/deskcomm-i2p.png)
 
 Run the built application:
 
