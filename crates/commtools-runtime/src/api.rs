@@ -6,8 +6,9 @@
 use crate::{ApplicationDriver, DriverError, HistoryWriteOutcome, SamMonitorStatus, SamTestStatus};
 use commtools_core::{
     ACTIVE_DEADDROP_REPLICA_COUNT, ApplicationPhase, CollisionWinner, ContactBackupInspection,
-    ContactId, DisconnectReason, GlobalSettings, GroupCollisionWinner, GroupDisconnectReason,
-    GroupId, HistoryRecord, ManagedSessionInfo, ManagedSessionKey, ManagedSessionPhase,
+    ContactId, DisconnectReason, GlobalSettings, GroupBackupInspection, GroupCollisionWinner,
+    GroupDisconnectReason, GroupId, HistoryRecord, ManagedSessionInfo, ManagedSessionKey,
+    ManagedSessionPhase,
     OfflineCoordinatorMode, OneToOnePhase, OriginalImageMetadata, SamFailureAction, SessionId,
     TransientId, TunnelSettings, ranked_deaddrop_servers,
 };
@@ -324,6 +325,21 @@ pub enum CommToolsCommand {
     CreateGroup {
         display_name: String,
     },
+    ExportGroupBackup {
+        group_id: GroupId,
+        path: PathBuf,
+        passphrase: Zeroizing<String>,
+        include_history: bool,
+    },
+    InspectGroupBackup {
+        path: PathBuf,
+        passphrase: Zeroizing<String>,
+    },
+    ImportGroupBackup {
+        path: PathBuf,
+        passphrase: Zeroizing<String>,
+        replace: bool,
+    },
     DeleteGroup {
         group_id: GroupId,
     },
@@ -501,6 +517,9 @@ pub enum CommToolsCommandResult {
     ContactDeaddropServerAdded(String),
     ContactDeaddropServerRemoved(String),
     GroupCreated(GroupId),
+    GroupBackupExported(PathBuf),
+    GroupBackupInspected(GroupBackupInspection),
+    GroupBackupImported(GroupId),
     GroupDeleted(GroupId),
     GroupLocalNameApplied,
     GroupHistorySettingApplied {
@@ -997,6 +1016,32 @@ impl ApplicationDriver {
             CommToolsCommand::CreateGroup { display_name } => {
                 let group_id = self.create_group(&display_name)?;
                 Ok(CommToolsCommandResult::GroupCreated(group_id))
+            }
+            CommToolsCommand::ExportGroupBackup {
+                group_id,
+                path,
+                passphrase,
+                include_history,
+            } => {
+                self.export_group_backup(
+                    &group_id,
+                    &path,
+                    passphrase.as_bytes(),
+                    include_history,
+                )?;
+                Ok(CommToolsCommandResult::GroupBackupExported(path))
+            }
+            CommToolsCommand::InspectGroupBackup { path, passphrase } => {
+                let inspection = self.inspect_group_backup(&path, passphrase.as_bytes())?;
+                Ok(CommToolsCommandResult::GroupBackupInspected(inspection))
+            }
+            CommToolsCommand::ImportGroupBackup {
+                path,
+                passphrase,
+                replace,
+            } => {
+                let group_id = self.import_group_backup(&path, passphrase.as_bytes(), replace)?;
+                Ok(CommToolsCommandResult::GroupBackupImported(group_id))
             }
             CommToolsCommand::DeleteGroup { group_id } => {
                 self.delete_group(&group_id)?;

@@ -21,9 +21,13 @@ use commtools_core::rendezvous::{
     input_kind as rendezvous_input_kind,
 };
 use commtools_core::{
-    ContactBackupInspection, ContactId, DisconnectReason, GroupId, HistoryRecord,
+    ContactBackupInspection, ContactId, DisconnectReason, GroupBackupInspection, GroupId,
+    HistoryRecord,
     ManagedSessionKey, ManagedSessionPhase, OfflineCoordinatorMode, OneToOnePhase,
     SamFailureAction, SessionId, TransientId, TunnelSettings, VaultRepository,
+    suggested_backup_export_path, suggested_backup_import_path,
+    suggested_contact_backup_export_path, suggested_contact_backup_import_path,
+    suggested_group_backup_export_path, suggested_group_backup_import_path,
 };
 use commtools_runtime::{
     CommToolsCommand, CommToolsCommandResult, CommToolsSnapshot, ContactSessionEvent,
@@ -251,6 +255,19 @@ struct ContactImportConfirmation {
     inspection: ContactBackupInspection,
 }
 
+#[derive(Debug, Clone)]
+struct PendingGroupImport {
+    path: PathBuf,
+    passphrase: Zeroizing<String>,
+}
+
+#[derive(Debug, Clone)]
+struct GroupImportConfirmation {
+    path: PathBuf,
+    passphrase: Zeroizing<String>,
+    inspection: GroupBackupInspection,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OfflineActivityState {
     Poll,
@@ -378,6 +395,8 @@ struct UiMappings {
     pending_rendezvous_command: RefCell<Option<PendingRendezvousCommand>>,
     pending_contact_import: RefCell<Option<PendingContactImport>>,
     contact_import_confirmation: RefCell<Option<ContactImportConfirmation>>,
+    pending_group_import: RefCell<Option<PendingGroupImport>>,
+    group_import_confirmation: RefCell<Option<GroupImportConfirmation>>,
     history_requested: RefCell<BTreeSet<ManagedSessionKey>>,
     latest_snapshot: RefCell<Option<CommToolsSnapshot>>,
 }
@@ -686,7 +705,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         let Some(ui) = begin_data_ui.upgrade() else {
             return;
         };
-        if !(1..=4).contains(&action) {
+        if !(1..=5).contains(&action) {
             return;
         }
         begin_data_mappings.pending_contact_import.borrow_mut().take();
@@ -694,12 +713,19 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
             .contact_import_confirmation
             .borrow_mut()
             .take();
+        begin_data_mappings.pending_group_import.borrow_mut().take();
+        begin_data_mappings
+            .group_import_confirmation
+            .borrow_mut()
+            .take();
         clear_settings_data_form(&ui);
         ui.set_settings_data_action(action);
         ui.set_settings_data_option(true);
         let default_path = match action {
-            1 | 2 => sibling_export_path(&begin_data_root, "-backup.ctbak"),
-            3 => sibling_export_path(&begin_data_root, "-contact.ctcontact"),
+            1 => suggested_backup_export_path(&begin_data_root),
+            2 => suggested_backup_import_path(&begin_data_root),
+            3 => suggested_contact_backup_import_path(&begin_data_root),
+            5 => suggested_group_backup_import_path(&begin_data_root),
             _ => PathBuf::new(),
         };
         ui.set_settings_data_path(default_path.display().to_string().into());
@@ -713,8 +739,10 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         };
         let current = PathBuf::from(ui.get_settings_data_path().as_str());
         let default_path = match action {
-            1 | 2 => sibling_export_path(&choose_data_root, "-backup.ctbak"),
-            3 => sibling_export_path(&choose_data_root, "-contact.ctcontact"),
+            1 => suggested_backup_export_path(&choose_data_root),
+            2 => suggested_backup_import_path(&choose_data_root),
+            3 => suggested_contact_backup_import_path(&choose_data_root),
+            5 => suggested_group_backup_import_path(&choose_data_root),
             _ => return,
         };
         if let Some(path) = choose_data_path(action, &current, &default_path) {
@@ -730,7 +758,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
             let Some(ui) = submit_data_ui.upgrade() else {
                 return;
             };
-            if !ui.get_settings_transport_editable() {
+            if !ui.get_settings_transport_editable() && !matches!(action, 3 | 5) {
                 ui.set_operation_status("Close all chats before managing stored data".into());
                 return;
             }
@@ -809,6 +837,29 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                     );
                     ui.set_settings_data_confirmation_visible(true);
                 }
+                5 => {
+                    *submit_data_mappings.pending_group_import.borrow_mut() =
+                        Some(PendingGroupImport {
+                            path: PathBuf::from(path),
+                            passphrase: Zeroizing::new(passphrase.to_string()),
+                        });
+                    clear_settings_data_secrets(&ui);
+                    ui.set_operation_busy(true);
+                    ui.set_operation_status("Inspecting encrypted group backup...".into());
+                    let command = {
+                        let pending = submit_data_mappings.pending_group_import.borrow();
+                        let pending = pending.as_ref().expect("pending import was just stored");
+                        BackendCommand::Runtime(CommToolsCommand::InspectGroupBackup {
+                            path: pending.path.clone(),
+                            passphrase: pending.passphrase.clone(),
+                        })
+                    };
+                    if let Err(error) = submit_data_sender.send(command) {
+                        submit_data_mappings.pending_group_import.borrow_mut().take();
+                        ui.set_operation_busy(false);
+                        ui.set_operation_status(error.into());
+                    }
+                }
                 _ => {}
             }
         },
@@ -825,6 +876,11 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
             confirm_data_mappings.pending_contact_import.borrow_mut().take();
             confirm_data_mappings
                 .contact_import_confirmation
+                .borrow_mut()
+                .take();
+            confirm_data_mappings.pending_group_import.borrow_mut().take();
+            confirm_data_mappings
+                .group_import_confirmation
                 .borrow_mut()
                 .take();
             clear_settings_data_form(&ui);
@@ -872,6 +928,22 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                     vault_passphrase: Zeroizing::new(passphrase.to_string()),
                 }
             }
+            5 => {
+                let Some(confirmation) = confirm_data_mappings
+                    .group_import_confirmation
+                    .borrow_mut()
+                    .take()
+                else {
+                    ui.set_operation_status("Group import confirmation expired".into());
+                    clear_settings_data_form(&ui);
+                    return;
+                };
+                CommToolsCommand::ImportGroupBackup {
+                    path: confirmation.path,
+                    passphrase: confirmation.passphrase,
+                    replace: confirmation.inspection.replacement_group_id.is_some(),
+                }
+            }
             _ => return,
         };
         clear_settings_data_secrets(&ui);
@@ -882,6 +954,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                 2 => "Restoring encrypted backup...",
                 3 => "Importing encrypted contact backup...",
                 4 => "Authorizing complete local wipe...",
+                5 => "Importing encrypted group backup...",
                 _ => "Applying data operation...",
             }
             .into(),
@@ -901,6 +974,11 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         cancel_data_mappings.pending_contact_import.borrow_mut().take();
         cancel_data_mappings
             .contact_import_confirmation
+            .borrow_mut()
+            .take();
+        cancel_data_mappings.pending_group_import.borrow_mut().take();
+        cancel_data_mappings
+            .group_import_confirmation
             .borrow_mut()
             .take();
         clear_settings_data_form(&ui);
@@ -1095,9 +1173,10 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         }
         clear_contact_export_form(&ui);
         ui.set_contact_export_path(
-            sibling_export_path(
+            suggested_contact_backup_export_path(
                 &begin_contact_export_root,
-                &format!("-contact-{contact_id}.ctcontact"),
+                ui.get_contact_detail_name().as_str(),
+                &contact_id,
             )
             .display()
             .to_string()
@@ -1109,12 +1188,24 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
 
     let choose_contact_export_ui = ui.as_weak();
     let choose_contact_export_root = vault_root.clone();
+    let choose_contact_export_mappings = mappings.clone();
     ui.on_choose_contact_export_path(move || {
         let Some(ui) = choose_contact_export_ui.upgrade() else {
             return;
         };
         let current = PathBuf::from(ui.get_contact_export_path().as_str());
-        let default_path = sibling_export_path(&choose_contact_export_root, "-contact.ctcontact");
+        let default_path = persistent_contact_id(
+            &choose_contact_export_mappings,
+            ui.get_selected_contact(),
+        )
+        .map(|contact_id| {
+            suggested_contact_backup_export_path(
+                &choose_contact_export_root,
+                ui.get_contact_detail_name().as_str(),
+                &contact_id,
+            )
+        })
+        .unwrap_or_else(|| suggested_contact_backup_import_path(&choose_contact_export_root));
         if let Some(path) = choose_save_path(
             "Export encrypted contact",
             "CommTools contact",
@@ -1405,6 +1496,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         };
         let selected = row_value(&select_group_mappings.groups, index);
         *select_group_mappings.details_group.borrow_mut() = None;
+        clear_group_export_form(&ui);
         refresh_group_details(&ui, &select_group_mappings, selected.as_ref());
     });
 
@@ -1480,6 +1572,121 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
             ui.set_operation_busy(false);
             ui.set_operation_status(error.into());
         }
+    });
+
+    let begin_group_export_ui = ui.as_weak();
+    let begin_group_export_mappings = mappings.clone();
+    let begin_group_export_root = vault_root.clone();
+    ui.on_begin_group_export(move |index| {
+        let Some(ui) = begin_group_export_ui.upgrade() else {
+            return;
+        };
+        let Some(group_id) = row_value(&begin_group_export_mappings.groups, index) else {
+            ui.set_operation_status("Select a valid group".into());
+            return;
+        };
+        if ui.get_selected_group_active() {
+            ui.set_operation_status("Close the group session before exporting it".into());
+            return;
+        }
+        clear_group_export_form(&ui);
+        ui.set_group_export_path(
+            suggested_group_backup_export_path(
+                &begin_group_export_root,
+                ui.get_group_detail_name().as_str(),
+                &group_id,
+            )
+            .display()
+            .to_string()
+            .into(),
+        );
+        ui.set_group_export_history(true);
+        ui.set_group_export_visible(true);
+    });
+
+    let choose_group_export_ui = ui.as_weak();
+    let choose_group_export_root = vault_root.clone();
+    let choose_group_export_mappings = mappings.clone();
+    ui.on_choose_group_export_path(move || {
+        let Some(ui) = choose_group_export_ui.upgrade() else {
+            return;
+        };
+        let current = PathBuf::from(ui.get_group_export_path().as_str());
+        let default_path = row_value(
+            &choose_group_export_mappings.groups,
+            ui.get_selected_group(),
+        )
+        .map(|group_id| {
+            suggested_group_backup_export_path(
+                &choose_group_export_root,
+                ui.get_group_detail_name().as_str(),
+                &group_id,
+            )
+        })
+        .unwrap_or_else(|| suggested_group_backup_import_path(&choose_group_export_root));
+        if let Some(path) = choose_save_path(
+            "Export encrypted group",
+            "CommTools group",
+            "ctgroup",
+            &current,
+            &default_path,
+        ) {
+            ui.set_group_export_path(path.display().to_string().into());
+        }
+    });
+
+    let submit_group_export_sender = backend.sender();
+    let submit_group_export_ui = ui.as_weak();
+    let submit_group_export_mappings = mappings.clone();
+    ui.on_submit_group_export(
+        move |index, path, passphrase, confirmation, include_history| {
+            let Some(ui) = submit_group_export_ui.upgrade() else {
+                return;
+            };
+            let Some(group_id) = row_value(&submit_group_export_mappings.groups, index) else {
+                ui.set_operation_status("Select a valid group".into());
+                return;
+            };
+            if ui.get_selected_group_active() {
+                ui.set_operation_status("Close the group session before exporting it".into());
+                return;
+            }
+            let path = path.trim();
+            if path.is_empty() || passphrase.is_empty() {
+                ui.set_operation_status(
+                    "Group export path and encryption passphrase are required".into(),
+                );
+                return;
+            }
+            if passphrase != confirmation {
+                ui.set_operation_status("Group export passphrases do not match".into());
+                return;
+            }
+            let command = CommToolsCommand::ExportGroupBackup {
+                group_id,
+                path: PathBuf::from(path),
+                passphrase: Zeroizing::new(passphrase.to_string()),
+                include_history,
+            };
+            clear_group_export_secrets(&ui);
+            ui.set_operation_busy(true);
+            ui.set_operation_status("Exporting encrypted group...".into());
+            if let Err(error) =
+                submit_group_export_sender.send(BackendCommand::Runtime(command))
+            {
+                ui.set_operation_busy(false);
+                ui.set_operation_status(error.into());
+            }
+        },
+    );
+
+    let cancel_group_export_ui = ui.as_weak();
+    ui.on_cancel_group_export(move || {
+        let Some(ui) = cancel_group_export_ui.upgrade() else {
+            return;
+        };
+        clear_group_export_form(&ui);
+        ui.set_operation_status("Group export cancelled".into());
     });
 
     let remove_member_sender = backend.sender();
@@ -2801,10 +3008,16 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                         .contact_import_confirmation
                         .borrow_mut()
                         .take();
+                    event_mappings.pending_group_import.borrow_mut().take();
+                    event_mappings
+                        .group_import_confirmation
+                        .borrow_mut()
+                        .take();
                     clear_settings_data_secrets(&ui);
                     ui.set_settings_data_confirmation_visible(false);
                     ui.set_settings_data_confirmation_text("".into());
                     clear_contact_export_secrets(&ui);
+                    clear_group_export_secrets(&ui);
                     refresh_messages(&ui, &event_mappings);
                     ui.set_operation_busy(false);
                     ui.set_operation_status(format!("Operation failed: {error}").into());
@@ -4745,6 +4958,47 @@ fn apply_command_result(ui: &AppWindow, mappings: &UiMappings, result: CommTools
             clear_settings_data_form(ui);
             "Encrypted contact backup imported".into()
         }
+        CommToolsCommandResult::GroupBackupExported(path) => {
+            clear_group_export_form(ui);
+            format!("Encrypted group exported to {}", path.display())
+        }
+        CommToolsCommandResult::GroupBackupInspected(inspection) => {
+            let Some(pending) = mappings.pending_group_import.borrow_mut().take() else {
+                ui.set_operation_busy(false);
+                ui.set_operation_status("Unexpected group-backup inspection result".into());
+                return;
+            };
+            let replacement = if inspection.replacement_group_id.is_some() {
+                "replace the existing matching group"
+            } else {
+                "create a new group"
+            };
+            let history = if inspection.includes_history {
+                "including retained history"
+            } else {
+                "without retained history"
+            };
+            ui.set_settings_data_confirmation_text(
+                format!(
+                    "Import '#{}' ({history}) and {replacement}?",
+                    inspection.display_name
+                )
+                .into(),
+            );
+            ui.set_settings_data_confirmation_visible(true);
+            *mappings.group_import_confirmation.borrow_mut() = Some(GroupImportConfirmation {
+                path: pending.path,
+                passphrase: pending.passphrase,
+                inspection,
+            });
+            "Encrypted group backup inspected".into()
+        }
+        CommToolsCommandResult::GroupBackupImported(group_id) => {
+            *mappings.pending_group_selection.borrow_mut() = Some(group_id);
+            mappings.group_import_confirmation.borrow_mut().take();
+            clear_settings_data_form(ui);
+            "Encrypted group backup imported".into()
+        }
         CommToolsCommandResult::TransientOpening(transient_id) => {
             let label = mappings
                 .pending_transient_label
@@ -4888,6 +5142,7 @@ fn apply_command_result(ui: &AppWindow, mappings: &UiMappings, result: CommTools
         CommToolsCommandResult::GroupDeleted(_) => {
             ui.set_group_confirmation(0);
             clear_group_invitation_fields(ui);
+            clear_group_export_form(ui);
             "Group record and retained history deleted locally".into()
         }
         CommToolsCommandResult::GroupOpening(_) => {
@@ -5123,18 +5378,6 @@ fn apply_command_result(ui: &AppWindow, mappings: &UiMappings, result: CommTools
     ui.set_operation_status(status.into());
 }
 
-fn sibling_export_path(vault_root: &Path, suffix: &str) -> PathBuf {
-    let mut filename = vault_root
-        .file_name()
-        .unwrap_or_else(|| std::ffi::OsStr::new(".termcomm-i2p"))
-        .to_os_string();
-    filename.push(suffix);
-    vault_root
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(filename)
-}
-
 fn choose_data_path(action: i32, current: &Path, default_path: &Path) -> Option<PathBuf> {
     match action {
         1 => choose_save_path(
@@ -5155,6 +5398,13 @@ fn choose_data_path(action: i32, current: &Path, default_path: &Path) -> Option<
             "Import encrypted contact",
             "CommTools contact",
             "ctcontact",
+            current,
+            default_path,
+        ),
+        5 => choose_open_path(
+            "Import encrypted group",
+            "CommTools group",
+            "ctgroup",
             current,
             default_path,
         ),
@@ -5231,6 +5481,18 @@ fn clear_contact_export_form(ui: &AppWindow) {
     ui.set_contact_export_visible(false);
     ui.set_contact_export_path("".into());
     ui.set_contact_export_history(true);
+}
+
+fn clear_group_export_secrets(ui: &AppWindow) {
+    ui.set_group_export_passphrase("".into());
+    ui.set_group_export_passphrase_confirm("".into());
+}
+
+fn clear_group_export_form(ui: &AppWindow) {
+    clear_group_export_secrets(ui);
+    ui.set_group_export_visible(false);
+    ui.set_group_export_path("".into());
+    ui.set_group_export_history(true);
 }
 
 fn clear_group_invitation_fields(ui: &AppWindow) {

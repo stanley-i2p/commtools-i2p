@@ -98,5 +98,8 @@ pub use storage::{
     group_storage_key,
 };
 pub use vault::{
-    ContactBackupInspection, UnlockedVault, VaultError, VaultKdfParams, VaultLease, VaultRepository,
+    ContactBackupInspection, GroupBackupInspection, UnlockedVault, VaultError, VaultKdfParams,
+    VaultLease, VaultRepository, suggested_backup_export_path, suggested_backup_import_path,
+    suggested_contact_backup_export_path, suggested_contact_backup_import_path,
+    suggested_group_backup_export_path, suggested_group_backup_import_path,
 };

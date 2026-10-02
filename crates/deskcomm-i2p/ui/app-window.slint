@@ -572,10 +572,12 @@ component CatalogRow inherits Rectangle {
 component GroupMemberRow inherits Rectangle {
     in property <GroupMemberItem> entry;
     in property <bool> selected;
+    in property <bool> enabled: true;
     callback activated();
 
     height: 54px;
     background: selected ? #174752 : transparent;
+    opacity: enabled ? 1 : 0.55;
 
     VerticalLayout {
         padding-left: 10px;
@@ -612,16 +614,21 @@ component GroupMemberRow inherits Rectangle {
         height: 1px;
         background: #263238;
     }
-    TouchArea { clicked => { root.activated(); } }
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activated(); }
+    }
 }
 
 component DeaddropServerRow inherits Rectangle {
     in property <DeaddropServerItem> entry;
     in property <bool> selected;
+    in property <bool> enabled: true;
     callback activated();
 
     height: 62px;
     background: selected ? #174752 : transparent;
+    opacity: enabled ? 1 : 0.55;
 
     VerticalLayout {
         padding-left: 8px;
@@ -663,7 +670,10 @@ component DeaddropServerRow inherits Rectangle {
         height: 1px;
         background: #263238;
     }
-    TouchArea { clicked => { root.activated(); } }
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activated(); }
+    }
 }
 
 component SessionTab inherits Rectangle {
@@ -1354,6 +1364,11 @@ export component AppWindow inherits Window {
     in-out property <string> group-detail-roster: "";
     in-out property <bool> group-history-enabled: false;
     in-out property <string> group-local-name-input: "";
+    in-out property <bool> group-export-visible: false;
+    in-out property <string> group-export-path: "";
+    in-out property <string> group-export-passphrase: "";
+    in-out property <string> group-export-passphrase-confirm: "";
+    in-out property <bool> group-export-history: true;
     in-out property <string> peer-address-input: "";
     in-out property <string> message-input: "";
     in-out property <bool> pasted-image-visible: false;
@@ -1418,6 +1433,10 @@ export component AppWindow inherits Window {
     callback set-group-history(int, bool);
     callback clear-group-history(int);
     callback set-group-local-name(int, string);
+    callback begin-group-export(int);
+    callback choose-group-export-path();
+    callback submit-group-export(int, string, string, string, bool);
+    callback cancel-group-export();
     callback remove-group-member(int, int);
     callback leave-group(int, bool);
     callback dissolve-group(int);
@@ -1633,7 +1652,9 @@ export component AppWindow inherits Window {
                                 label: "Contacts";
                                 enabled: !root.new-one-to-one-visible
                                     && !root.new-group-visible
-                                    && !root.group-join-visible;
+                                    && !root.group-join-visible
+                                    && !root.contact-export-visible
+                                    && !root.group-export-visible;
                                 selected: !root.settings-visible
                                     && root.selected-section == 0;
                                 activated => {
@@ -1642,6 +1663,9 @@ export component AppWindow inherits Window {
                                     }
                                     if root.contact-export-visible {
                                         root.cancel-contact-export();
+                                    }
+                                    if root.group-export-visible {
+                                        root.cancel-group-export();
                                     }
                                     root.settings-visible = false;
                                     root.new-one-to-one-visible = false;
@@ -1667,7 +1691,9 @@ export component AppWindow inherits Window {
                                 label: "Groups";
                                 enabled: !root.new-one-to-one-visible
                                     && !root.new-group-visible
-                                    && !root.group-join-visible;
+                                    && !root.group-join-visible
+                                    && !root.contact-export-visible
+                                    && !root.group-export-visible;
                                 selected: !root.settings-visible
                                     && !root.contact-details-visible
                                     && root.selected-section == 1;
@@ -1677,6 +1703,9 @@ export component AppWindow inherits Window {
                                     }
                                     if root.contact-export-visible {
                                         root.cancel-contact-export();
+                                    }
+                                    if root.group-export-visible {
+                                        root.cancel-group-export();
                                     }
                                     root.settings-visible = false;
                                     root.new-one-to-one-visible = false;
@@ -1714,7 +1743,9 @@ export component AppWindow inherits Window {
                                     entry: contact;
                                     contact-markers: true;
                                     selected: root.selected-contact == index;
-                                    enabled: !root.new-one-to-one-visible;
+                                    enabled: !root.new-one-to-one-visible
+                                        && !root.contact-export-visible
+                                        && !root.group-export-visible;
                                     activated => {
                                         root.selected-contact = index;
                                         root.selected-contact-active = contact.active;
@@ -1742,7 +1773,9 @@ export component AppWindow inherits Window {
                                 for group[index] in root.groups: CatalogRow {
                                     entry: group;
                                     selected: root.selected-group == index;
-                                    enabled: !root.new-group-visible && !root.group-join-visible;
+                                    enabled: !root.new-group-visible && !root.group-join-visible
+                                        && !root.contact-export-visible
+                                        && !root.group-export-visible;
                                     activated => {
                                         root.selected-group = index;
                                         root.selected-group-active = group.active;
@@ -1773,7 +1806,9 @@ export component AppWindow inherits Window {
                                 CommandButton {
                                     width: 137px;
                                     text: root.new-one-to-one-visible ? "Cancel" : "New";
-                                    enabled: !root.operation-busy && !root.unlock-confirmation-visible;
+                                    enabled: !root.operation-busy && !root.unlock-confirmation-visible
+                                        && !root.contact-export-visible
+                                        && !root.group-export-visible;
                                     clicked => {
                                         if !root.new-one-to-one-visible {
                                             root.settings-visible = false;
@@ -1805,6 +1840,8 @@ export component AppWindow inherits Window {
                                     enabled: !root.operation-busy
                                         && !root.new-one-to-one-visible
                                         && !root.unlock-confirmation-visible
+                                        && !root.contact-export-visible
+                                        && !root.group-export-visible
                                         && root.selected-contact >= 0;
                                     clicked => {
                                         root.settings-visible = false;
@@ -1856,6 +1893,8 @@ export component AppWindow inherits Window {
                                     enabled: !root.operation-busy
                                         && !root.new-one-to-one-visible
                                         && !root.selected-contact-transient
+                                        && !root.contact-export-visible
+                                        && !root.group-export-visible
                                         && root.selected-contact >= 0;
                                     clicked => {
                                         root.select-contact(root.selected-contact);
@@ -1877,6 +1916,8 @@ export component AppWindow inherits Window {
                                     enabled: !root.operation-busy
                                         && !root.new-one-to-one-visible
                                         && !root.selected-contact-transient
+                                        && !root.contact-export-visible
+                                        && !root.group-export-visible
                                         && root.selected-contact >= 0
                                         && root.selected-contact-pinned
                                         && !root.selected-contact-active;
@@ -1923,7 +1964,9 @@ export component AppWindow inherits Window {
                                 CommandButton {
                                     width: 137px;
                                     text: root.new-group-visible ? "Cancel" : "New";
-                                    enabled: !root.operation-busy && !root.group-join-visible;
+                                    enabled: !root.operation-busy && !root.group-join-visible
+                                        && !root.contact-export-visible
+                                        && !root.group-export-visible;
                                     clicked => {
                                         if !root.new-group-visible {
                                             root.settings-visible = false;
@@ -1952,6 +1995,8 @@ export component AppWindow inherits Window {
                                     enabled: !root.operation-busy
                                         && !root.new-group-visible
                                         && !root.group-join-visible
+                                        && !root.contact-export-visible
+                                        && !root.group-export-visible
                                         && root.selected-group >= 0
                                         && !root.selected-group-active;
                                     clicked => {
@@ -1982,6 +2027,8 @@ export component AppWindow inherits Window {
                                     enabled: !root.operation-busy
                                         && !root.new-group-visible
                                         && !root.group-join-visible
+                                        && !root.contact-export-visible
+                                        && !root.group-export-visible
                                         && root.selected-group >= 0;
                                     clicked => {
                                         root.select-group(root.selected-group);
@@ -2005,7 +2052,9 @@ export component AppWindow inherits Window {
                                 CommandButton {
                                     width: 137px;
                                     text: root.group-join-visible ? "Cancel" : "Join";
-                                    enabled: !root.operation-busy && !root.new-group-visible;
+                                    enabled: !root.operation-busy && !root.new-group-visible
+                                        && !root.contact-export-visible
+                                        && !root.group-export-visible;
                                     clicked => {
                                         if !root.group-join-visible {
                                             root.settings-visible = false;
@@ -2072,13 +2121,18 @@ export component AppWindow inherits Window {
                             text: root.settings-visible ? "Back to chats" : "Settings";
                             enabled: !root.new-one-to-one-visible
                                 && !root.new-group-visible
-                                && !root.group-join-visible;
+                                && !root.group-join-visible
+                                && !root.contact-export-visible
+                                && !root.group-export-visible;
                             clicked => {
                                 if root.settings-visible {
                                     root.cancel-settings-data-action();
                                 }
                                 if root.contact-export-visible {
                                     root.cancel-contact-export();
+                                }
+                                if root.group-export-visible {
+                                    root.cancel-group-export();
                                 }
                                 root.settings-visible = !root.settings-visible;
                                 root.new-one-to-one-visible = false;
@@ -2393,9 +2447,7 @@ export component AppWindow inherits Window {
                             font-size: 14px;
                         }
                         Text {
-                            text: root.settings-transport-editable
-                                ? "Encrypted backups and destructive storage operations require all chats to be closed."
-                                : "Close all opening and active chats before managing stored data.";
+                            text: "Full-vault and destructive operations require all chats closed. Contact and group imports require only the matching session closed.";
                             color: root.settings-transport-editable ? #87959a : #d5aa64;
                             font-size: 11px;
                             wrap: word-wrap;
@@ -2421,8 +2473,15 @@ export component AppWindow inherits Window {
                                 horizontal-stretch: 1;
                                 label: "Import contact";
                                 selected: root.settings-data-action == 3;
-                                enabled: root.settings-transport-editable && !root.operation-busy;
+                                enabled: !root.operation-busy;
                                 clicked => { root.begin-settings-data-action(3); }
+                            }
+                            DataActionButton {
+                                horizontal-stretch: 1;
+                                label: "Import group";
+                                selected: root.settings-data-action == 5;
+                                enabled: !root.operation-busy;
+                                clicked => { root.begin-settings-data-action(5); }
                             }
                             DataActionButton {
                                 horizontal-stretch: 1;
@@ -2607,7 +2666,7 @@ export component AppWindow inherits Window {
                                     min-height: 28px;
                                     max-height: 28px;
                                     text: "Back to chats";
-                                    enabled: !root.operation-busy;
+                                    enabled: !root.operation-busy && !root.contact-export-visible;
                                     clicked => {
                                         root.cancel-contact-export();
                                         root.contact-details-visible = false;
@@ -2651,7 +2710,8 @@ export component AppWindow inherits Window {
                                     text <=> root.contact-rename-input;
                                     placeholder-text: "Contact name";
                                     enabled: !root.operation-busy && !root.selected-contact-active
-                                        && root.contact-confirmation == 0;
+                                        && root.contact-confirmation == 0
+                                        && !root.contact-export-visible;
                                     accepted(value) => {
                                         root.rename-contact(root.selected-contact, value);
                                     }
@@ -2661,6 +2721,7 @@ export component AppWindow inherits Window {
                                     text: "Rename contact";
                                     enabled: !root.operation-busy && !root.selected-contact-active
                                         && root.contact-confirmation == 0
+                                        && !root.contact-export-visible
                                         && root.contact-rename-input != "";
                                     clicked => {
                                         root.rename-contact(
@@ -2695,7 +2756,8 @@ export component AppWindow inherits Window {
                                 spacing: 6px;
                                 CommandButton {
                                     text: root.contact-history-enabled ? "History: On" : "History: Off";
-                                    enabled: !root.operation-busy && root.contact-confirmation == 0;
+                                    enabled: !root.operation-busy && root.contact-confirmation == 0
+                                        && !root.contact-export-visible;
                                     clicked => {
                                         root.set-contact-history(
                                             root.selected-contact,
@@ -2705,7 +2767,8 @@ export component AppWindow inherits Window {
                                 }
                                 CommandButton {
                                     text: "Clear history";
-                                    enabled: !root.operation-busy && root.contact-confirmation == 0;
+                                    enabled: !root.operation-busy && root.contact-confirmation == 0
+                                        && !root.contact-export-visible;
                                     clicked => { root.contact-confirmation = 1; }
                                 }
                             }
@@ -2737,6 +2800,7 @@ export component AppWindow inherits Window {
                                     text: "-";
                                     enabled: !root.operation-busy && !root.selected-contact-active
                                         && root.contact-confirmation == 0
+                                        && !root.contact-export-visible
                                         && root.contact-tunnel-length > 1;
                                     clicked => {
                                         root.contact-tunnel-length = root.contact-tunnel-length - 1;
@@ -2755,6 +2819,7 @@ export component AppWindow inherits Window {
                                     text: "+";
                                     enabled: !root.operation-busy && !root.selected-contact-active
                                         && root.contact-confirmation == 0
+                                        && !root.contact-export-visible
                                         && root.contact-tunnel-length < 4;
                                     clicked => {
                                         root.contact-tunnel-length = root.contact-tunnel-length + 1;
@@ -2776,6 +2841,7 @@ export component AppWindow inherits Window {
                                     text: "-";
                                     enabled: !root.operation-busy && !root.selected-contact-active
                                         && root.contact-confirmation == 0
+                                        && !root.contact-export-visible
                                         && root.contact-tunnel-quantity > 1;
                                     clicked => {
                                         root.contact-tunnel-quantity = root.contact-tunnel-quantity - 1;
@@ -2794,6 +2860,7 @@ export component AppWindow inherits Window {
                                     text: "+";
                                     enabled: !root.operation-busy && !root.selected-contact-active
                                         && root.contact-confirmation == 0
+                                        && !root.contact-export-visible
                                         && root.contact-tunnel-quantity < 5;
                                     clicked => {
                                         root.contact-tunnel-quantity = root.contact-tunnel-quantity + 1;
@@ -2806,7 +2873,8 @@ export component AppWindow inherits Window {
                                 CommandButton {
                                     text: "Save tunnels";
                                     enabled: !root.operation-busy && !root.selected-contact-active
-                                        && root.contact-confirmation == 0;
+                                        && root.contact-confirmation == 0
+                                        && !root.contact-export-visible;
                                     clicked => {
                                         root.set-contact-tunnels(
                                             root.selected-contact,
@@ -2818,7 +2886,8 @@ export component AppWindow inherits Window {
                                 CommandButton {
                                     text: "Defaults";
                                     enabled: !root.operation-busy && !root.selected-contact-active
-                                        && root.contact-confirmation == 0;
+                                        && root.contact-confirmation == 0
+                                        && !root.contact-export-visible;
                                     clicked => { root.reset-contact-tunnels(root.selected-contact); }
                                 }
                             }
@@ -2848,7 +2917,8 @@ export component AppWindow inherits Window {
                                     text <=> root.contact-deaddrop-input;
                                     placeholder-text: "Server b32.i2p";
                                     enabled: !root.operation-busy && !root.selected-contact-active
-                                        && root.contact-confirmation == 0;
+                                        && root.contact-confirmation == 0
+                                        && !root.contact-export-visible;
                                     accepted(value) => {
                                         root.add-contact-deaddrop(root.selected-contact, value);
                                     }
@@ -2858,6 +2928,7 @@ export component AppWindow inherits Window {
                                     text: "Add";
                                     enabled: !root.operation-busy && !root.selected-contact-active
                                         && root.contact-confirmation == 0
+                                        && !root.contact-export-visible
                                         && root.contact-deaddrop-input != "";
                                     clicked => {
                                         root.add-contact-deaddrop(
@@ -2872,6 +2943,7 @@ export component AppWindow inherits Window {
                                 for server[index] in root.contact-deaddrops: DeaddropServerRow {
                                     entry: server;
                                     selected: root.selected-contact-deaddrop == index;
+                                    enabled: !root.contact-export-visible;
                                     activated => {
                                         root.selected-contact-deaddrop = index;
                                         root.selected-contact-deaddrop-removable = server.removable;
@@ -2883,6 +2955,7 @@ export component AppWindow inherits Window {
                                 text: "Remove selected server";
                                 enabled: !root.operation-busy && !root.selected-contact-active
                                     && root.contact-confirmation == 0
+                                    && !root.contact-export-visible
                                     && root.selected-contact-deaddrop-removable;
                                 clicked => { root.contact-confirmation = 2; }
                             }
@@ -2995,13 +3068,15 @@ export component AppWindow inherits Window {
                                 CommandButton {
                                     text: "Reset contact";
                                     enabled: !root.operation-busy && !root.selected-contact-active
-                                        && root.contact-confirmation == 0;
+                                        && root.contact-confirmation == 0
+                                        && !root.contact-export-visible;
                                     clicked => { root.contact-confirmation = 3; }
                                 }
                                 CommandButton {
                                     text: "Delete contact";
                                     enabled: !root.operation-busy && !root.selected-contact-active
-                                        && root.contact-confirmation == 0;
+                                        && root.contact-confirmation == 0
+                                        && !root.contact-export-visible;
                                     clicked => { root.contact-confirmation = 4; }
                                 }
                             }
@@ -3051,7 +3126,7 @@ export component AppWindow inherits Window {
                                 min-height: 28px;
                                 max-height: 28px;
                                 text: "Back to chats";
-                                enabled: !root.operation-busy;
+                                enabled: !root.operation-busy && !root.group-export-visible;
                                 clicked => {
                                     root.group-details-visible = false;
                                     root.group-confirmation = 0;
@@ -3059,6 +3134,9 @@ export component AppWindow inherits Window {
                                     root.private-request-input = "";
                                     root.generated-group-material-label = "";
                                     root.generated-group-material = "";
+                                    root.group-export-visible = false;
+                                    root.group-export-passphrase = "";
+                                    root.group-export-passphrase-confirm = "";
                                 }
                             }
                         }
@@ -3107,7 +3185,8 @@ export component AppWindow inherits Window {
                                 height: 28px;
                                 text <=> root.group-local-name-input;
                                 placeholder-text: "Local member name";
-                                enabled: !root.operation-busy && root.group-confirmation == 0;
+                                enabled: !root.operation-busy && root.group-confirmation == 0
+                                    && !root.group-export-visible;
                                 accepted(value) => {
                                     root.set-group-local-name(root.selected-group, value);
                                 }
@@ -3117,6 +3196,7 @@ export component AppWindow inherits Window {
                                 text: "Save name";
                                 enabled: !root.operation-busy
                                     && root.group-confirmation == 0
+                                    && !root.group-export-visible
                                     && root.group-local-name-input != "";
                                 clicked => {
                                     root.set-group-local-name(
@@ -3143,7 +3223,8 @@ export component AppWindow inherits Window {
                             CommandButton {
                                 width: (root.context-inspector-width - 30px) / 2;
                                 text: root.group-history-enabled ? "History: On" : "History: Off";
-                                enabled: !root.operation-busy && root.group-confirmation == 0;
+                                enabled: !root.operation-busy && root.group-confirmation == 0
+                                    && !root.group-export-visible;
                                 clicked => {
                                     root.set-group-history(
                                         root.selected-group,
@@ -3154,7 +3235,8 @@ export component AppWindow inherits Window {
                             CommandButton {
                                 width: (root.context-inspector-width - 30px) / 2;
                                 text: "Clear history";
-                                enabled: !root.operation-busy && root.group-confirmation == 0;
+                                enabled: !root.operation-busy && root.group-confirmation == 0
+                                    && !root.group-export-visible;
                                 clicked => { root.group-confirmation = 6; }
                             }
                         }
@@ -3171,7 +3253,8 @@ export component AppWindow inherits Window {
                         if root.selected-group-owner: GroupInvitationModeSelector {
                             width: root.context-inspector-width - 24px;
                             private-mode <=> root.group-invite-private-mode;
-                            enabled: !root.operation-busy && root.group-confirmation == 0;
+                            enabled: !root.operation-busy && root.group-confirmation == 0
+                                && !root.group-export-visible;
                             selected(private-mode) => {
                                 root.group-invite-private-mode = private-mode;
                                 root.private-request-input = "";
@@ -3182,7 +3265,8 @@ export component AppWindow inherits Window {
                         if root.selected-group-owner && !root.group-invite-private-mode: CommandButton {
                             height: 30px;
                             text: "Generate public invitation";
-                            enabled: !root.operation-busy && root.group-confirmation == 0;
+                            enabled: !root.operation-busy && root.group-confirmation == 0
+                                && !root.group-export-visible;
                             clicked => {
                                 root.generate-public-invite(root.selected-group);
                             }
@@ -3195,7 +3279,8 @@ export component AppWindow inherits Window {
                                 height: 28px;
                                 text <=> root.private-request-input;
                                 placeholder-text: "Paste private request";
-                                enabled: !root.operation-busy && root.group-confirmation == 0;
+                                enabled: !root.operation-busy && root.group-confirmation == 0
+                                    && !root.group-export-visible;
                                 accepted(value) => {
                                     if value != "" {
                                         root.answer-private-request(root.selected-group, value);
@@ -3207,6 +3292,7 @@ export component AppWindow inherits Window {
                                 text: "Approve request";
                                 enabled: !root.operation-busy
                                     && root.group-confirmation == 0
+                                    && !root.group-export-visible
                                     && root.private-request-input != "";
                                 clicked => {
                                     root.answer-private-request(
@@ -3247,6 +3333,7 @@ export component AppWindow inherits Window {
                             for member[index] in root.group-members: GroupMemberRow {
                                 entry: member;
                                 selected: root.selected-group-member == index;
+                                enabled: !root.group-export-visible;
                                 activated => {
                                     root.selected-group-member = index;
                                     root.selected-group-member-removable = member.removable;
@@ -3259,8 +3346,97 @@ export component AppWindow inherits Window {
                             text: "Remove member";
                             enabled: !root.operation-busy
                                 && root.group-confirmation == 0
+                                && !root.group-export-visible
                                 && root.selected-group-member-removable;
                             clicked => { root.group-confirmation = 1; }
+                        }
+
+                        Rectangle { height: 1px; background: #344148; }
+                        CommandButton {
+                            text: "Export group";
+                            enabled: !root.operation-busy && !root.selected-group-active
+                                && root.group-confirmation == 0
+                                && !root.group-export-visible;
+                            clicked => { root.begin-group-export(root.selected-group); }
+                        }
+                        if root.group-export-visible: Rectangle {
+                            height: 124px;
+                            background: #101619;
+                            border-width: 1px;
+                            border-color: #344148;
+                            border-radius: 4px;
+
+                            VerticalLayout {
+                                padding: 8px;
+                                spacing: 6px;
+                                HorizontalLayout {
+                                    height: 30px;
+                                    spacing: 6px;
+                                    LineEdit {
+                                        height: 28px;
+                                        text <=> root.group-export-path;
+                                        placeholder-text: "Encrypted group file path";
+                                        enabled: !root.operation-busy;
+                                    }
+                                    CommandButton {
+                                        width: 68px;
+                                        text: "Browse";
+                                        enabled: !root.operation-busy;
+                                        clicked => { root.choose-group-export-path(); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    height: 30px;
+                                    spacing: 6px;
+                                    LineEdit {
+                                        width: (root.context-inspector-width - 46px) / 2;
+                                        height: 28px;
+                                        text <=> root.group-export-passphrase;
+                                        input-type: InputType.password;
+                                        placeholder-text: "Encryption passphrase";
+                                        enabled: !root.operation-busy;
+                                    }
+                                    LineEdit {
+                                        width: (root.context-inspector-width - 46px) / 2;
+                                        height: 28px;
+                                        text <=> root.group-export-passphrase-confirm;
+                                        input-type: InputType.password;
+                                        placeholder-text: "Confirm passphrase";
+                                        enabled: !root.operation-busy;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    height: 28px;
+                                    spacing: 6px;
+                                    CheckBox {
+                                        text: "Include history";
+                                        font-size: 11px;
+                                        checked <=> root.group-export-history;
+                                        enabled: !root.operation-busy;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    CommandButton {
+                                        width: 72px;
+                                        text: "Export";
+                                        enabled: !root.operation-busy;
+                                        clicked => {
+                                            root.submit-group-export(
+                                                root.selected-group,
+                                                root.group-export-path,
+                                                root.group-export-passphrase,
+                                                root.group-export-passphrase-confirm,
+                                                root.group-export-history
+                                            );
+                                        }
+                                    }
+                                    CommandButton {
+                                        width: 72px;
+                                        text: "Cancel";
+                                        enabled: !root.operation-busy;
+                                        clicked => { root.cancel-group-export(); }
+                                    }
+                                }
+                            }
                         }
 
                         Rectangle { height: 1px; background: #344148; }
@@ -3272,6 +3448,7 @@ export component AppWindow inherits Window {
                                 text: "Leave group";
                                 enabled: !root.operation-busy
                                     && root.group-confirmation == 0
+                                    && !root.group-export-visible
                                     && (!root.group-leave-pending || !root.group-owner-ready);
                                 clicked => {
                                     root.group-confirmation = root.group-owner-ready ? 2 : 3;
@@ -3282,6 +3459,7 @@ export component AppWindow inherits Window {
                                 text: "Dissolve group";
                                 enabled: !root.operation-busy
                                     && root.group-confirmation == 0
+                                    && !root.group-export-visible
                                     && !root.group-leave-pending;
                                 clicked => { root.group-confirmation = 4; }
                             }
@@ -3290,6 +3468,7 @@ export component AppWindow inherits Window {
                                 text: "Delete locally";
                                 enabled: !root.operation-busy
                                     && root.group-confirmation == 0
+                                    && !root.group-export-visible
                                     && !root.selected-group-active;
                                 clicked => { root.group-confirmation = 5; }
                             }

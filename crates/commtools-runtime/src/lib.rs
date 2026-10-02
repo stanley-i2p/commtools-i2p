@@ -17,7 +17,7 @@ pub use api::{
     RendezvousSessionEvent, RuntimeOperationEvent, SessionLifecycleEvent, SessionSummary,
     TextDeliveryEvent, TextReceivedEvent, TextSendResult,
 };
-pub use commtools_core::ContactBackupInspection;
+pub use commtools_core::{ContactBackupInspection, GroupBackupInspection};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use commtools_core::application::{
@@ -1363,6 +1363,51 @@ impl ApplicationDriver {
         Ok(self
             .vault_mut()?
             .import_contact_backup(path, passphrase, replace)?)
+    }
+
+    pub fn export_group_backup(
+        &mut self,
+        group_id: &GroupId,
+        path: &Path,
+        passphrase: &[u8],
+        include_history: bool,
+    ) -> Result<(), DriverError> {
+        if self.group_is_active(group_id) {
+            return Err(DriverError::GroupBackupRequiresClosed(group_id.clone()));
+        }
+        self.vault_mut()?
+            .export_group_backup(group_id, path, passphrase, include_history)?;
+        Ok(())
+    }
+
+    pub fn inspect_group_backup(
+        &self,
+        path: &Path,
+        passphrase: &[u8],
+    ) -> Result<GroupBackupInspection, DriverError> {
+        Ok(self
+            .vault()
+            .ok_or(DriverError::VaultUnavailable)?
+            .inspect_group_backup(path, passphrase)?)
+    }
+
+    pub fn import_group_backup(
+        &mut self,
+        path: &Path,
+        passphrase: &[u8],
+        replace: bool,
+    ) -> Result<GroupId, DriverError> {
+        let inspection = self.inspect_group_backup(path, passphrase)?;
+        if let Some(replacement_id) = &inspection.replacement_group_id
+            && self.group_is_active(replacement_id)
+        {
+            return Err(DriverError::GroupImportRequiresClosed(
+                replacement_id.clone(),
+            ));
+        }
+        Ok(self
+            .vault_mut()?
+            .import_group_backup(path, passphrase, replace)?)
     }
 
     pub fn export_backup(
@@ -8648,6 +8693,10 @@ pub enum DriverError {
     GroupNotFound(GroupId),
     #[error("close the group before deleting it: {0}")]
     GroupDeleteRequiresClosed(GroupId),
+    #[error("close the group before exporting it: {0}")]
+    GroupBackupRequiresClosed(GroupId),
+    #[error("close the conflicting group session before replacing it: {0}")]
+    GroupImportRequiresClosed(GroupId),
     #[error("open the group before requesting an authoritative leave: {0}")]
     GroupLeaveRequiresOpen(GroupId),
     #[error("the group owner is not connected; only a local leave is currently possible: {0}")]

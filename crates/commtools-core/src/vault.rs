@@ -1,8 +1,8 @@
 use crate::history::{
     HISTORY_FILENAME, HistoryError, HistoryRecord, HistoryRepository, HistoryScope,
 };
-use crate::ids::ContactId;
-use crate::storage::{StorageError, StorageRepository, StorageSnapshot};
+use crate::ids::{ContactId, GroupId};
+use crate::storage::{StorageError, StorageRepository, StorageSnapshot, group_storage_key};
 use argon2::{Algorithm, Argon2, Params, Version};
 use crypto_secretbox::{
     Key, Nonce, XSalsa20Poly1305,
@@ -12,11 +12,13 @@ use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use fs2::FileExt;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tar::{Archive, Builder, EntryType};
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -44,12 +46,16 @@ const BACKUP_MANIFEST_FILE: &str = ".commtools-backup.json";
 const CONTACT_BACKUP_MAGIC: &[u8] = b"COMMTOOLS-I2P-CONTACT-BACKUP-V1\n";
 const CONTACT_BACKUP_FORMAT: &str = "commtools-i2p-encrypted-contact-backup";
 const CONTACT_BACKUP_PAYLOAD_FILE: &str = "contact.json";
+const GROUP_BACKUP_MAGIC: &[u8] = b"COMMTOOLS-I2P-GROUP-BACKUP-V1\n";
+const GROUP_BACKUP_FORMAT: &str = "commtools-i2p-encrypted-group-backup";
+const GROUP_BACKUP_PAYLOAD_FILE: &str = "group.json";
 const SALT_SIZE: usize = 16;
 const NONCE_SIZE: usize = 24;
 const MAX_PASSPHRASE_BYTES: usize = 1_024;
 const MAX_ENCRYPTED_VAULT_BYTES: u64 = 16 * 1_024 * 1_024 * 1_024;
 const MAX_EXTRACTED_VAULT_BYTES: u64 = 16 * 1_024 * 1_024 * 1_024;
 const MAX_CONTACT_BACKUP_PAYLOAD_BYTES: u64 = 32 * 1_024 * 1_024;
+const MAX_GROUP_BACKUP_PAYLOAD_BYTES: u64 = 32 * 1_024 * 1_024;
 #[cfg(unix)]
 const DIRECTORY_MODE: u32 = 0o700;
 #[cfg(unix)]
@@ -115,6 +121,58 @@ pub struct ContactBackupInspection {
     pub display_name: String,
     pub includes_history: bool,
     pub replacement_contact_id: Option<ContactId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GroupBackupInspection {
+    pub group_id: GroupId,
+    pub display_name: String,
+    pub includes_history: bool,
+    pub replacement_group_id: Option<GroupId>,
+}
+
+pub fn suggested_backup_export_path(vault_root: &Path) -> PathBuf {
+    let timestamp = utc_artifact_timestamp(SystemTime::now());
+    sibling_artifact_path(vault_root, &format!("-backup-{timestamp}.ctbak"))
+}
+
+pub fn suggested_backup_import_path(vault_root: &Path) -> PathBuf {
+    sibling_artifact_path(vault_root, "-backup.ctbak")
+}
+
+pub fn suggested_contact_backup_export_path(
+    vault_root: &Path,
+    display_name: &str,
+    contact_id: &ContactId,
+) -> PathBuf {
+    let label = artifact_display_label(display_name);
+    let identifier = artifact_identifier(contact_id.as_str());
+    sibling_artifact_path(
+        vault_root,
+        &format!("-contact-{label}-{identifier}.ctcontact"),
+    )
+}
+
+pub fn suggested_contact_backup_import_path(vault_root: &Path) -> PathBuf {
+    sibling_artifact_path(vault_root, "-contact.ctcontact")
+}
+
+pub fn suggested_group_backup_export_path(
+    vault_root: &Path,
+    display_name: &str,
+    group_id: &GroupId,
+) -> PathBuf {
+    let label = artifact_display_label(display_name);
+    let identifier = artifact_identifier(group_id.as_str());
+    sibling_artifact_path(
+        vault_root,
+        &format!("-group-{label}-{identifier}.ctgroup"),
+    )
+}
+
+pub fn suggested_group_backup_import_path(vault_root: &Path) -> PathBuf {
+    sibling_artifact_path(vault_root, "-group.ctgroup")
 }
 
 #[derive(Debug, Clone)]
@@ -708,6 +766,150 @@ impl UnlockedVault {
         }
     }
 
+    pub fn export_group_backup(
+        &mut self,
+        group_id: &GroupId,
+        path: &Path,
+        passphrase: &[u8],
+        include_history: bool,
+    ) -> Result<(), VaultError> {
+        validate_passphrase(passphrase)?;
+        self.validate_external_backup_path(path)?;
+        self.commit()?;
+        let group = self
+            .snapshot
+            .groups
+            .get(group_id)
+            .cloned()
+            .ok_or_else(|| StorageError::Validation(format!("group not found: {group_id}")))?;
+        let history = if include_history {
+            Some(
+                self.history_repository()?
+                    .load(&HistoryScope::Group(group_storage_key(&group.id)))?,
+            )
+        } else {
+            None
+        };
+        let payload = GroupBackupPayload::new(group, history);
+        payload.validate()?;
+        let archive = Zeroizing::new(build_group_backup_tar_gz(&payload)?);
+        let encrypted = encrypt_container(
+            &archive,
+            passphrase,
+            self.repository.creation_kdf,
+            GROUP_BACKUP_MAGIC,
+            GROUP_BACKUP_FORMAT,
+        )?;
+        publish_container(path, &encrypted)
+    }
+
+    pub fn inspect_group_backup(
+        &self,
+        path: &Path,
+        passphrase: &[u8],
+    ) -> Result<GroupBackupInspection, VaultError> {
+        validate_passphrase(passphrase)?;
+        let payload = read_group_backup(path, passphrase)?;
+        let replacement_group_id = self.group_backup_replacement(&payload.group)?;
+        Ok(GroupBackupInspection {
+            group_id: payload.group.id,
+            display_name: payload.group.display_name,
+            includes_history: payload.history.is_some(),
+            replacement_group_id,
+        })
+    }
+
+    pub fn import_group_backup(
+        &mut self,
+        path: &Path,
+        passphrase: &[u8],
+        replace: bool,
+    ) -> Result<GroupId, VaultError> {
+        validate_passphrase(passphrase)?;
+        self.commit()?;
+        let payload = read_group_backup(path, passphrase)?;
+        let replacement = self.group_backup_replacement(&payload.group)?;
+        if replacement.is_some() && !replace {
+            return Err(VaultError::GroupImportRequiresReplacement);
+        }
+
+        let imported_id = payload.group.id.clone();
+        let imported_scope = HistoryScope::Group(group_storage_key(&imported_id));
+        let history_repository = self.history_repository()?;
+        let previous_history = replacement
+            .as_ref()
+            .map(|replacement_id| {
+                let scope = HistoryScope::Group(group_storage_key(replacement_id));
+                history_repository
+                    .load(&scope)
+                    .map(|records| (scope, records))
+            })
+            .transpose()?;
+        let mut candidate = self.snapshot.clone();
+        if let Some(replacement_id) = &replacement {
+            candidate.groups.remove(replacement_id);
+        }
+        candidate.groups.insert(imported_id.clone(), payload.group);
+        candidate.validate()?;
+
+        let previous_snapshot = self.snapshot.clone();
+        self.storage.commit(&mut candidate)?;
+        self.snapshot = candidate;
+        self.dirty = false;
+        let history = payload.history.unwrap_or_default();
+        if let Err(error) = history_repository.replace(&imported_scope, &history) {
+            let mut rollback = previous_snapshot;
+            rollback = rollback.clone_with_revision(self.snapshot.revision())?;
+            if let Err(rollback_error) = self.storage.commit(&mut rollback) {
+                return Err(VaultError::GroupImportRollback {
+                    operation: error.to_string(),
+                    rollback: rollback_error.to_string(),
+                });
+            }
+            self.snapshot = rollback;
+            self.dirty = false;
+            if let Some((scope, records)) = &previous_history
+                && let Err(rollback_error) = history_repository.replace(scope, records)
+            {
+                return Err(VaultError::GroupImportRollback {
+                    operation: error.to_string(),
+                    rollback: rollback_error.to_string(),
+                });
+            }
+            return Err(error.into());
+        }
+        Ok(imported_id)
+    }
+
+    fn group_backup_replacement(
+        &self,
+        imported: &crate::storage::GroupRecord,
+    ) -> Result<Option<GroupId>, VaultError> {
+        let imported_b32 = imported.identity.as_ref().map(|identity| &identity.b32);
+        let mut matches = self
+            .snapshot
+            .groups
+            .values()
+            .filter(|existing| {
+                existing.id == imported.id
+                    || imported_b32.is_some_and(|b32| {
+                        existing
+                            .identity
+                            .as_ref()
+                            .is_some_and(|identity| identity.b32.eq_ignore_ascii_case(b32))
+                    })
+            })
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop()),
+            _ => Err(VaultError::AmbiguousGroupImportConflict),
+        }
+    }
+
     pub fn commit(&mut self) -> Result<(), VaultError> {
         if !self.dirty {
             return Ok(());
@@ -915,6 +1117,15 @@ struct ContactBackupPayload {
     history: Option<Vec<HistoryRecord>>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GroupBackupPayload {
+    format: String,
+    version: u32,
+    group: crate::storage::GroupRecord,
+    history: Option<Vec<HistoryRecord>>,
+}
+
 impl ContactBackupPayload {
     fn new(contact: crate::storage::ContactRecord, history: Option<Vec<HistoryRecord>>) -> Self {
         Self {
@@ -933,6 +1144,32 @@ impl ContactBackupPayload {
         snapshot
             .contacts
             .insert(self.contact.id.clone(), self.contact.clone());
+        snapshot.validate()?;
+        if let Some(history) = &self.history {
+            HistoryRepository::validate_records(history)?;
+        }
+        Ok(())
+    }
+}
+
+impl GroupBackupPayload {
+    fn new(group: crate::storage::GroupRecord, history: Option<Vec<HistoryRecord>>) -> Self {
+        Self {
+            format: "COMMTOOLS-I2P-GROUP-BACKUP".into(),
+            version: 1,
+            group,
+            history,
+        }
+    }
+
+    fn validate(&self) -> Result<(), VaultError> {
+        if self.format != "COMMTOOLS-I2P-GROUP-BACKUP" || self.version != 1 {
+            return Err(VaultError::UnsupportedFormat);
+        }
+        let mut snapshot = StorageSnapshot::new();
+        snapshot
+            .groups
+            .insert(self.group.id.clone(), self.group.clone());
         snapshot.validate()?;
         if let Some(history) = &self.history {
             HistoryRepository::validate_records(history)?;
@@ -1016,6 +1253,12 @@ pub enum VaultError {
     AmbiguousContactImportConflict,
     #[error("contact import failed ({operation}); storage rollback also failed ({rollback})")]
     ContactImportRollback { operation: String, rollback: String },
+    #[error("group backup conflicts with an existing group and requires replacement")]
+    GroupImportRequiresReplacement,
+    #[error("group backup identifier and local identity conflict with different existing groups")]
+    AmbiguousGroupImportConflict,
+    #[error("group import failed ({operation}); storage rollback also failed ({rollback})")]
+    GroupImportRollback { operation: String, rollback: String },
     #[error("vault I/O error at {path}: {source}")]
     Io {
         path: PathBuf,
@@ -1262,6 +1505,86 @@ fn read_contact_backup(path: &Path, passphrase: &[u8]) -> Result<ContactBackupPa
     }
     let payload_bytes = payload_bytes.ok_or(VaultError::MalformedContainer)?;
     let payload: ContactBackupPayload =
+        serde_json::from_slice(&payload_bytes).map_err(|_| VaultError::MalformedContainer)?;
+    payload.validate()?;
+    Ok(payload)
+}
+
+fn build_group_backup_tar_gz(payload: &GroupBackupPayload) -> Result<Vec<u8>, VaultError> {
+    let serialized = Zeroizing::new(
+        serde_json::to_vec(payload)
+            .map_err(|error| VaultError::Serialization(error.to_string()))?,
+    );
+    if serialized.len() as u64 > MAX_GROUP_BACKUP_PAYLOAD_BYTES {
+        return Err(VaultError::TooLarge(serialized.len() as u64));
+    }
+    let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
+    {
+        let mut archive = Builder::new(&mut gzip);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(serialized.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        archive
+            .append_data(
+                &mut header,
+                Path::new("commtools-group-backup-v1").join(GROUP_BACKUP_PAYLOAD_FILE),
+                serialized.as_slice(),
+            )
+            .map_err(|error| io_error(Path::new(GROUP_BACKUP_PAYLOAD_FILE), error))?;
+        archive
+            .finish()
+            .map_err(|error| io_error(Path::new(GROUP_BACKUP_PAYLOAD_FILE), error))?;
+    }
+    gzip
+        .finish()
+        .map_err(|error| io_error(Path::new(GROUP_BACKUP_PAYLOAD_FILE), error))
+}
+
+fn read_group_backup(path: &Path, passphrase: &[u8]) -> Result<GroupBackupPayload, VaultError> {
+    let encrypted = read_container(path)?;
+    let (archive, _) = decrypt_container(
+        &encrypted,
+        passphrase,
+        GROUP_BACKUP_MAGIC,
+        GROUP_BACKUP_FORMAT,
+    )?;
+    let archive = Zeroizing::new(archive);
+    let decoder = GzDecoder::new(Cursor::new(archive.as_slice()));
+    let mut tar = Archive::new(decoder);
+    let mut payload_bytes: Option<Zeroizing<Vec<u8>>> = None;
+    for entry in tar.entries().map_err(|_| VaultError::MalformedContainer)? {
+        let mut entry = entry.map_err(|_| VaultError::MalformedContainer)?;
+        let entry_path = entry
+            .path()
+            .map_err(|_| VaultError::UnsafeArchive)?
+            .into_owned();
+        let expected = Path::new("commtools-group-backup-v1").join(GROUP_BACKUP_PAYLOAD_FILE);
+        if entry_path != expected
+            || entry.header().entry_type() != EntryType::Regular
+            || payload_bytes.is_some()
+        {
+            return Err(VaultError::UnsafeArchive);
+        }
+        let size = entry
+            .header()
+            .size()
+            .map_err(|_| VaultError::MalformedContainer)?;
+        if size > MAX_GROUP_BACKUP_PAYLOAD_BYTES || size > usize::MAX as u64 {
+            return Err(VaultError::TooLarge(size));
+        }
+        let mut bytes = Zeroizing::new(Vec::with_capacity(size as usize));
+        std::io::Read::by_ref(&mut entry)
+            .take(MAX_GROUP_BACKUP_PAYLOAD_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| io_error(path, error))?;
+        if bytes.len() as u64 != size {
+            return Err(VaultError::MalformedContainer);
+        }
+        payload_bytes = Some(bytes);
+    }
+    let payload_bytes = payload_bytes.ok_or(VaultError::MalformedContainer)?;
+    let payload: GroupBackupPayload =
         serde_json::from_slice(&payload_bytes).map_err(|_| VaultError::MalformedContainer)?;
     payload.validate()?;
     Ok(payload)
@@ -1533,6 +1856,76 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         difference |= usize::from(left ^ right);
     }
     difference == 0
+}
+
+fn sibling_artifact_path(vault_root: &Path, suffix: &str) -> PathBuf {
+    let prefix = vault_root
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new(".termcomm-i2p"))
+        .to_string_lossy();
+    let prefix = prefix.trim_start_matches('.');
+    let filename = format!("{prefix}{suffix}");
+    vault_root
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(filename)
+}
+
+fn utc_artifact_timestamp(time: SystemTime) -> String {
+    let seconds = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = (seconds / 86_400) as i64;
+    let day_seconds = seconds % 86_400;
+    let hour = day_seconds / 3_600;
+    let minute = (day_seconds % 3_600) / 60;
+    let second = day_seconds % 60;
+    let shifted_days = days + 719_468;
+    let era = shifted_days / 146_097;
+    let day_of_era = shifted_days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096)
+            / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year =
+        day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_part = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_part + 2) / 5 + 1;
+    let month = month_part + if month_part < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    format!("{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}")
+}
+
+fn artifact_display_label(display_name: &str) -> String {
+    let mut label = String::new();
+    let mut separator = false;
+    for character in display_name.trim().chars() {
+        if character.is_alphanumeric() || matches!(character, '-' | '_') {
+            if separator && !label.is_empty() {
+                label.push('-');
+            }
+            separator = false;
+            label.push(character);
+        } else {
+            separator = true;
+        }
+        if label.chars().count() >= 64 {
+            break;
+        }
+    }
+    let label = label.chars().take(48).collect::<String>();
+    let label = label.trim_matches('-');
+    if label.is_empty() {
+        "unnamed".into()
+    } else {
+        label.into()
+    }
+}
+
+fn artifact_identifier(identifier: &str) -> String {
+    let digest = Sha256::digest(identifier.as_bytes());
+    hex::encode(&digest[..3])
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf, VaultError> {

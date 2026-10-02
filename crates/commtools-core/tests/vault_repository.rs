@@ -4,6 +4,9 @@ use commtools_core::storage::{
 };
 use commtools_core::vault::{
     MIN_ARGON2_ITERATIONS, MIN_ARGON2_MEMORY_KIB, VaultError, VaultKdfParams, VaultRepository,
+    suggested_backup_export_path, suggested_backup_import_path,
+    suggested_contact_backup_export_path, suggested_contact_backup_import_path,
+    suggested_group_backup_export_path, suggested_group_backup_import_path,
 };
 use commtools_core::{HistoryRecord, HistoryScope};
 use std::fs;
@@ -11,6 +14,51 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+
+#[test]
+fn encrypted_artifact_paths_are_stable_safe_and_recognizable() {
+    let vault_root = Path::new("secure-device").join(".termcomm-i2p");
+    let contact_id = ContactId::new("contact-local-123-0").expect("contact id");
+    let group_id = GroupId::new("group/local/123").expect("group id");
+
+    let contact = suggested_contact_backup_export_path(
+        &vault_root,
+        "  Bob / Primary  ",
+        &contact_id,
+    );
+    let repeated =
+        suggested_contact_backup_export_path(&vault_root, "Bob / Primary", &contact_id);
+    assert_eq!(contact, repeated);
+    let contact_name = contact.file_name().and_then(|name| name.to_str()).unwrap();
+    assert!(contact_name.starts_with("termcomm-i2p-contact-Bob-Primary-"));
+    assert!(contact_name.ends_with(".ctcontact"));
+    assert!(!contact_name.contains('/'));
+
+    let group = suggested_group_backup_export_path(&vault_root, "Family: Core", &group_id);
+    let group_name = group.file_name().and_then(|name| name.to_str()).unwrap();
+    assert!(group_name.starts_with("termcomm-i2p-group-Family-Core-"));
+    assert!(group_name.ends_with(".ctgroup"));
+    assert!(!group_name.contains('/'));
+
+    let backup = suggested_backup_export_path(&vault_root);
+    let backup_name = backup.file_name().and_then(|name| name.to_str()).unwrap();
+    assert!(backup_name.starts_with("termcomm-i2p-backup-"));
+    assert!(backup_name.ends_with(".ctbak"));
+    assert_eq!(backup_name.len(), "termcomm-i2p-backup-YYYYMMDD-HHMMSS.ctbak".len());
+
+    assert_eq!(
+        suggested_backup_import_path(&vault_root),
+        Path::new("secure-device").join("termcomm-i2p-backup.ctbak")
+    );
+    assert_eq!(
+        suggested_contact_backup_import_path(&vault_root),
+        Path::new("secure-device").join("termcomm-i2p-contact.ctcontact")
+    );
+    assert_eq!(
+        suggested_group_backup_import_path(&vault_root),
+        Path::new("secure-device").join("termcomm-i2p-group.ctgroup")
+    );
+}
 
 #[test]
 fn vault_round_trip_exposes_plaintext_only_while_unlocked() {
@@ -611,6 +659,103 @@ fn encrypted_contact_backup_requires_confirmed_replacement_and_restores_history(
     let encrypted = fs::read(&backup).expect("read contact backup");
     assert!(!contains(&encrypted, b"Portable Alice"));
     assert!(!contains(&encrypted, b"portable history"));
+    let _ = fs::remove_file(backup);
+}
+
+#[test]
+fn encrypted_group_backup_replaces_matching_identity_and_restores_history() {
+    let source_temp = TestDirectory::new("group-backup-source");
+    let source_repository = test_repository(source_temp.path());
+    let backup = source_temp.path().with_extension("ctgroup");
+    let mut source = source_repository
+        .create(b"source vault passphrase")
+        .expect("create source");
+    let imported_id = GroupId::new("portable-group").expect("group id");
+    let mut imported = GroupRecord::new(imported_id.clone(), "Portable Group").expect("group");
+    let local_b32 = commtools_core::sam::destination_to_b32("YWJj").expect("local b32");
+    imported.identity =
+        Some(PersistentIdentity::new("YWJj", &local_b32).expect("persistent identity"));
+    source
+        .update(|snapshot| {
+            snapshot.groups.insert(imported_id.clone(), imported);
+            Ok(())
+        })
+        .expect("store source group");
+    source
+        .history_repository()
+        .expect("history repository")
+        .append_message(
+            &HistoryScope::Group(commtools_core::group_storage_key(&imported_id)),
+            &HistoryRecord {
+                created_ms: 9,
+                timestamp_utc: "00:00:09 UTC".into(),
+                author: "Alice".into(),
+                sender_b32: Some(local_b32.clone()),
+                text: "portable group history".into(),
+                mine: true,
+                offline: false,
+                msg_id: Some(9),
+                delivered: true,
+                group_expected_acks: Vec::new(),
+                group_received_acks: Vec::new(),
+            },
+        )
+        .expect("history fixture");
+    source
+        .export_group_backup(&imported_id, &backup, b"group passphrase", true)
+        .expect("export group");
+
+    let target_temp = TestDirectory::new("group-backup-target");
+    let target_repository = test_repository(target_temp.path());
+    let mut target = target_repository
+        .create(b"target vault passphrase")
+        .expect("create target");
+    let replaced_id = GroupId::new("existing-group").expect("existing id");
+    target
+        .update(|snapshot| {
+            let mut existing = GroupRecord::new(replaced_id.clone(), "Existing Group")?;
+            existing.identity = Some(PersistentIdentity::new("YWJj", &local_b32)?);
+            snapshot.groups.insert(replaced_id.clone(), existing);
+            Ok(())
+        })
+        .expect("store conflicting group");
+
+    let inspection = target
+        .inspect_group_backup(&backup, b"group passphrase")
+        .expect("inspect group");
+    assert_eq!(inspection.group_id, imported_id);
+    assert_eq!(inspection.display_name, "Portable Group");
+    assert!(inspection.includes_history);
+    assert_eq!(inspection.replacement_group_id, Some(replaced_id.clone()));
+    assert!(matches!(
+        target.import_group_backup(&backup, b"group passphrase", false),
+        Err(VaultError::GroupImportRequiresReplacement)
+    ));
+
+    let restored_id = target
+        .import_group_backup(&backup, b"group passphrase", true)
+        .expect("replace group");
+    assert_eq!(restored_id, imported_id);
+    assert!(!target.snapshot().groups.contains_key(&replaced_id));
+    assert_eq!(
+        target.snapshot().groups[&imported_id]
+            .identity
+            .as_ref()
+            .map(|identity| identity.b32.as_str()),
+        Some(local_b32.as_str())
+    );
+    let history = target
+        .history_repository()
+        .expect("history repository")
+        .load(&HistoryScope::Group(commtools_core::group_storage_key(
+            &imported_id,
+        )))
+        .expect("load imported history");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].text, "portable group history");
+    let encrypted = fs::read(&backup).expect("read group backup");
+    assert!(!contains(&encrypted, b"Portable Group"));
+    assert!(!contains(&encrypted, b"portable group history"));
     let _ = fs::remove_file(backup);
 }
 

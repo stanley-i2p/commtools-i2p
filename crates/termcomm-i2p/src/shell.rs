@@ -10,8 +10,11 @@ use crate::workspace::{
     OpenDisposition, RendezvousSubmitDisposition, TransientBrowserEntry, Workspace,
 };
 use commtools_core::{
-    ContactBackupInspection, ContactId, GroupId, HistoryRecord, ManagedSessionKey,
-    SamFailureAction, TransientId, TunnelSettings,
+    ContactBackupInspection, ContactId, GroupBackupInspection, GroupId, HistoryRecord,
+    ManagedSessionKey, SamFailureAction, TransientId, TunnelSettings,
+    suggested_backup_export_path, suggested_backup_import_path,
+    suggested_contact_backup_export_path, suggested_contact_backup_import_path,
+    suggested_group_backup_export_path, suggested_group_backup_import_path,
 };
 use commtools_runtime::{
     ApplicationDriver, CommToolsCommand, CommToolsCommandResult, ContactSessionEvent,
@@ -248,6 +251,8 @@ enum GroupBrowserAction {
     LocalName,
     ToggleHistory,
     ClearHistory,
+    ExportGroup,
+    ImportGroup,
     GeneratePublicInvite,
     CopyPublicInvite,
     GeneratePrivateRequest,
@@ -262,12 +267,14 @@ enum GroupBrowserAction {
 }
 
 impl GroupBrowserAction {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 18] = [
         Self::NewGroup,
         Self::OpenGroup,
         Self::LocalName,
         Self::ToggleHistory,
         Self::ClearHistory,
+        Self::ExportGroup,
+        Self::ImportGroup,
         Self::GeneratePublicInvite,
         Self::CopyPublicInvite,
         Self::GeneratePrivateRequest,
@@ -288,6 +295,8 @@ impl GroupBrowserAction {
             Self::LocalName => "Set local member name",
             Self::ToggleHistory => "Toggle history",
             Self::ClearHistory => "Clear history",
+            Self::ExportGroup => "Export encrypted group",
+            Self::ImportGroup => "Import encrypted group",
             Self::GeneratePublicInvite => "Generate public invite",
             Self::CopyPublicInvite => "Copy public invite",
             Self::GeneratePrivateRequest => "Generate private request",
@@ -309,6 +318,7 @@ impl GroupBrowserAction {
                 | Self::GeneratePrivateRequest
                 | Self::CopyPrivateRequest
                 | Self::ImportInvite
+                | Self::ImportGroup
         )
     }
 }
@@ -400,6 +410,11 @@ enum ContactBackupOperation {
         display_name: String,
     },
     Import,
+    ExportGroup {
+        group_id: GroupId,
+        display_name: String,
+    },
+    ImportGroup,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -415,7 +430,13 @@ struct ContactBackupInput {
 struct ContactBackupConfirmation {
     path: PathBuf,
     passphrase: Zeroizing<String>,
-    inspection: ContactBackupInspection,
+    inspection: BackupInspection,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum BackupInspection {
+    Contact(ContactBackupInspection),
+    Group(GroupBackupInspection),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1069,6 +1090,8 @@ impl ShellState {
                 match &input.operation {
                     ContactBackupOperation::Export { .. } => " Export encrypted contact ",
                     ContactBackupOperation::Import => " Import encrypted contact ",
+                    ContactBackupOperation::ExportGroup { .. } => " Export encrypted group ",
+                    ContactBackupOperation::ImportGroup => " Import encrypted group ",
                 }
             } else if self.settings_input.is_some() {
                 match self.settings_input.as_ref() {
@@ -1108,8 +1131,10 @@ impl ShellState {
                     input.include_history,
                     input.field,
                     match &input.operation {
-                        ContactBackupOperation::Export { .. } => "Include history",
-                        ContactBackupOperation::Import => "Backup history",
+                        ContactBackupOperation::Export { .. }
+                        | ContactBackupOperation::ExportGroup { .. } => "Include history",
+                        ContactBackupOperation::Import
+                        | ContactBackupOperation::ImportGroup => "Backup history",
                     },
                 )
             } else if let Some(setting) = self.settings_input.as_ref() {
@@ -1559,7 +1584,7 @@ impl ShellState {
             }
             SettingsAction::ExportBackup => {
                 self.settings_input = Some(SettingsInput::ExportBackup {
-                    path: sibling_export_path(&self.vault_root, "-backup.ctbak")
+                    path: suggested_backup_export_path(&self.vault_root)
                         .display()
                         .to_string(),
                     passphrase: Zeroizing::new(String::new()),
@@ -1572,7 +1597,7 @@ impl ShellState {
             }
             SettingsAction::RestoreBackup => {
                 self.settings_input = Some(SettingsInput::RestoreBackup {
-                    path: sibling_export_path(&self.vault_root, "-backup.ctbak")
+                    path: suggested_backup_import_path(&self.vault_root)
                         .display()
                         .to_string(),
                     passphrase: Zeroizing::new(String::new()),
@@ -1931,9 +1956,10 @@ impl ShellState {
                 contact_id: contact.id.clone(),
                 display_name: contact.display_name.clone(),
             },
-            path: sibling_export_path(
+            path: suggested_contact_backup_export_path(
                 &self.vault_root,
-                &format!("-contact-{}.ctcontact", contact.id),
+                &contact.display_name,
+                &contact.id,
             )
             .display()
             .to_string(),
@@ -1948,7 +1974,7 @@ impl ShellState {
     fn begin_contact_backup_import(&mut self) {
         self.contact_backup_input = Some(ContactBackupInput {
             operation: ContactBackupOperation::Import,
-            path: sibling_export_path(&self.vault_root, "-contact.ctcontact")
+            path: suggested_contact_backup_import_path(&self.vault_root)
                 .display()
                 .to_string(),
             passphrase: Zeroizing::new(String::new()),
@@ -1957,6 +1983,48 @@ impl ShellState {
         });
         self.status =
             "Enter path; Tab selects passphrase; Enter inspects the contact backup.".into();
+    }
+
+    fn begin_group_backup_export(&mut self, driver: &ApplicationDriver) {
+        let Some(group) = selected_group(driver, self.selected_group.as_ref()) else {
+            self.status = "No group is selected.".into();
+            return;
+        };
+        if group.active {
+            self.status = "Close the group tab before exporting it.".into();
+            return;
+        }
+        self.contact_backup_input = Some(ContactBackupInput {
+            operation: ContactBackupOperation::ExportGroup {
+                group_id: group.id.clone(),
+                display_name: group.display_name.clone(),
+            },
+            path: suggested_group_backup_export_path(
+                &self.vault_root,
+                &group.display_name,
+                &group.id,
+            )
+            .display()
+            .to_string(),
+            passphrase: Zeroizing::new(String::new()),
+            include_history: true,
+            field: BackupInputField::Path,
+        });
+        self.status =
+            "Enter path; Tab selects passphrase; Space toggles history; Enter exports.".into();
+    }
+
+    fn begin_group_backup_import(&mut self) {
+        self.contact_backup_input = Some(ContactBackupInput {
+            operation: ContactBackupOperation::ImportGroup,
+            path: suggested_group_backup_import_path(&self.vault_root)
+                .display()
+                .to_string(),
+            passphrase: Zeroizing::new(String::new()),
+            include_history: false,
+            field: BackupInputField::Path,
+        });
+        self.status = "Enter path; Tab selects passphrase; Enter inspects the group backup.".into();
     }
 
     fn handle_contact_backup_input_key(
@@ -1997,8 +2065,11 @@ impl ShellState {
             }
             KeyCode::Char(' ')
                 if self.contact_backup_input.as_ref().is_some_and(|input| {
-                    matches!(&input.operation, ContactBackupOperation::Export { .. })
-                        && input.field == BackupInputField::Path
+                    (matches!(&input.operation, ContactBackupOperation::Export { .. })
+                        || matches!(
+                            &input.operation,
+                            ContactBackupOperation::ExportGroup { .. }
+                        )) && input.field == BackupInputField::Path
                 }) =>
             {
                 if let Some(input) = self.contact_backup_input.as_mut() {
@@ -2033,7 +2104,7 @@ impl ShellState {
             return;
         };
         if input.path.trim().is_empty() || input.passphrase.is_empty() {
-            self.status = "Contact backup path and passphrase are required.".into();
+            self.status = "Backup path and passphrase are required.".into();
             return;
         }
         let path = PathBuf::from(input.path.trim());
@@ -2079,12 +2150,61 @@ impl ShellState {
                         self.contact_backup_confirmation = Some(ContactBackupConfirmation {
                             path,
                             passphrase: input.passphrase,
-                            inspection,
+                            inspection: BackupInspection::Contact(inspection),
                         });
                         self.contact_backup_input = None;
                     }
                     Ok(_) => self.status = "Unexpected contact-inspection result.".into(),
                     Err(error) => self.status = format!("Inspect contact backup: {error}"),
+                }
+            }
+            ContactBackupOperation::ExportGroup {
+                group_id,
+                display_name,
+            } => match driver.dispatch_command(CommToolsCommand::ExportGroupBackup {
+                group_id,
+                path: path.clone(),
+                passphrase: input.passphrase,
+                include_history: input.include_history,
+            }) {
+                Ok(CommToolsCommandResult::GroupBackupExported(_)) => {
+                    self.contact_backup_input = None;
+                    self.status = format!(
+                        "Encrypted group backup for {display_name} exported to {}",
+                        path.display()
+                    );
+                }
+                Ok(_) => self.status = "Unexpected group-export result.".into(),
+                Err(error) => self.status = format!("Export group: {error}"),
+            },
+            ContactBackupOperation::ImportGroup => {
+                match driver.dispatch_command(CommToolsCommand::InspectGroupBackup {
+                    path: path.clone(),
+                    passphrase: input.passphrase.clone(),
+                }) {
+                    Ok(CommToolsCommandResult::GroupBackupInspected(inspection)) => {
+                        let replacement = inspection
+                            .replacement_group_id
+                            .as_ref()
+                            .map_or("new group", |_| "replace existing group");
+                        let history = if inspection.includes_history {
+                            "with history"
+                        } else {
+                            "without history"
+                        };
+                        self.status = format!(
+                            "Import #{} ({}, {replacement})? y/n",
+                            inspection.display_name, history
+                        );
+                        self.contact_backup_confirmation = Some(ContactBackupConfirmation {
+                            path,
+                            passphrase: input.passphrase,
+                            inspection: BackupInspection::Group(inspection),
+                        });
+                        self.contact_backup_input = None;
+                    }
+                    Ok(_) => self.status = "Unexpected group-inspection result.".into(),
+                    Err(error) => self.status = format!("Inspect group backup: {error}"),
                 }
             }
         }
@@ -2105,27 +2225,49 @@ impl ShellState {
                 let Some(confirmation) = self.contact_backup_confirmation.take() else {
                     return ShellAction::Continue;
                 };
-                let replace = confirmation.inspection.replacement_contact_id.is_some();
-                match driver.dispatch_command(CommToolsCommand::ImportContactBackup {
-                    path: confirmation.path,
-                    passphrase: confirmation.passphrase,
-                    replace,
-                }) {
-                    Ok(CommToolsCommandResult::ContactBackupImported(contact_id)) => {
-                        self.selected_contact_item =
-                            Some(ContactBrowserItem::Contact(contact_id.clone()));
-                        self.status = format!(
-                            "Imported encrypted contact backup: {}",
-                            confirmation.inspection.display_name
-                        );
+                match confirmation.inspection {
+                    BackupInspection::Contact(inspection) => {
+                        let replace = inspection.replacement_contact_id.is_some();
+                        match driver.dispatch_command(CommToolsCommand::ImportContactBackup {
+                            path: confirmation.path,
+                            passphrase: confirmation.passphrase,
+                            replace,
+                        }) {
+                            Ok(CommToolsCommandResult::ContactBackupImported(contact_id)) => {
+                                self.selected_contact_item =
+                                    Some(ContactBrowserItem::Contact(contact_id));
+                                self.status = format!(
+                                    "Imported encrypted contact backup: {}",
+                                    inspection.display_name
+                                );
+                            }
+                            Ok(_) => self.status = "Unexpected contact-import result.".into(),
+                            Err(error) => self.status = format!("Import contact: {error}"),
+                        }
                     }
-                    Ok(_) => self.status = "Unexpected contact-import result.".into(),
-                    Err(error) => self.status = format!("Import contact: {error}"),
+                    BackupInspection::Group(inspection) => {
+                        let replace = inspection.replacement_group_id.is_some();
+                        match driver.dispatch_command(CommToolsCommand::ImportGroupBackup {
+                            path: confirmation.path,
+                            passphrase: confirmation.passphrase,
+                            replace,
+                        }) {
+                            Ok(CommToolsCommandResult::GroupBackupImported(group_id)) => {
+                                self.selected_group = Some(group_id);
+                                self.status = format!(
+                                    "Imported encrypted group backup: #{}",
+                                    inspection.display_name
+                                );
+                            }
+                            Ok(_) => self.status = "Unexpected group-import result.".into(),
+                            Err(error) => self.status = format!("Import group: {error}"),
+                        }
+                    }
                 }
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.contact_backup_confirmation = None;
-                self.status = "Contact import cancelled.".into();
+                self.status = "Encrypted import cancelled.".into();
             }
             _ => {}
         }
@@ -2303,6 +2445,8 @@ impl ShellState {
             GroupBrowserAction::LocalName => self.begin_group_name_input(driver),
             GroupBrowserAction::ToggleHistory => self.toggle_selected_history(driver),
             GroupBrowserAction::ClearHistory => self.begin_group_history_clear(driver),
+            GroupBrowserAction::ExportGroup => self.begin_group_backup_export(driver),
+            GroupBrowserAction::ImportGroup => self.begin_group_backup_import(),
             GroupBrowserAction::GeneratePublicInvite => self.generate_public_group_invite(driver),
             GroupBrowserAction::CopyPublicInvite => self.copy_generated_public_invite(),
             GroupBrowserAction::GeneratePrivateRequest => {
@@ -2360,6 +2504,7 @@ impl ShellState {
                 group.is_some_and(|group| group.owner && !group.leave_pending)
             }
             GroupBrowserAction::DeleteLocalGroup => group.is_some_and(|group| !group.active),
+            GroupBrowserAction::ExportGroup => group.is_some_and(|group| !group.active),
             _ => true,
         }
     }
@@ -5337,18 +5482,6 @@ fn detail_line(label: &str, value: &str) -> Line<'static> {
     ])
 }
 
-fn sibling_export_path(vault_root: &Path, suffix: &str) -> PathBuf {
-    let mut filename = vault_root
-        .file_name()
-        .unwrap_or_else(|| std::ffi::OsStr::new(".termcomm-i2p"))
-        .to_os_string();
-    filename.push(suffix);
-    vault_root
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(filename)
-}
-
 fn backup_input_display(
     path: &str,
     passphrase: &str,
@@ -5561,21 +5694,21 @@ mod tests {
     #[test]
     fn export_defaults_are_siblings_of_the_vault_root() {
         let vault_root = Path::new("secure-device").join(".termcomm-i2p");
-        assert_eq!(
-            sibling_export_path(&vault_root, "-backup.ctbak"),
-            Path::new("secure-device").join(".termcomm-i2p-backup.ctbak")
-        );
-        assert_eq!(
-            sibling_export_path(&vault_root, "-contact-alice.ctcontact"),
-            Path::new("secure-device").join(".termcomm-i2p-contact-alice.ctcontact")
-        );
+        let contact_id = ContactId::new("alice-id").expect("contact id");
+        let contact = suggested_contact_backup_export_path(&vault_root, "Alice", &contact_id);
+        assert_eq!(contact.parent(), Some(Path::new("secure-device")));
+        let filename = contact.file_name().and_then(|name| name.to_str()).unwrap();
+        assert!(filename.starts_with("termcomm-i2p-contact-Alice-"));
+        assert!(filename.ends_with(".ctcontact"));
     }
 
     #[test]
     fn group_action_catalog_exposes_history_controls() {
-        assert_eq!(GroupBrowserAction::ALL.len(), 16);
+        assert_eq!(GroupBrowserAction::ALL.len(), 18);
         assert!(GroupBrowserAction::ALL.contains(&GroupBrowserAction::ToggleHistory));
         assert!(GroupBrowserAction::ALL.contains(&GroupBrowserAction::ClearHistory));
+        assert!(GroupBrowserAction::ALL.contains(&GroupBrowserAction::ExportGroup));
+        assert!(GroupBrowserAction::ALL.contains(&GroupBrowserAction::ImportGroup));
     }
 
     #[test]
