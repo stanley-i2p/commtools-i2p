@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "commtools-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "argon2",
  "base64",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "commtools-runtime"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "commtools-core",
@@ -1424,7 +1424,7 @@ dependencies = [
 
 [[package]]
 name = "deskcomm-i2p"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "arboard",
  "commtools-core",
@@ -5835,7 +5835,7 @@ dependencies = [
 
 [[package]]
 name = "termcomm-i2p"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "arboard",
  "commtools-core",
