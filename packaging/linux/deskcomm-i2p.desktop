@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=DeskComm-I2P
+Comment=Compartmentalized communication over I2P
+Exec=deskcomm-i2p
+Icon=deskcomm-i2p
+Terminal=false
+Categories=Network;Chat;

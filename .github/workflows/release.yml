@@ -231,6 +231,7 @@ jobs:
           apt-get update
           apt-get install --yes --no-install-recommends \
             cmake \
+            desktop-file-utils \
             file \
             git \
             libegl1-mesa-dev \
@@ -287,6 +288,14 @@ jobs:
           mkdir -p .linux-check
           tar -xzf "$archive" -C .linux-check
           test -x ".linux-check/$package/deskcomm-i2p"
+          desktop_entry=".linux-check/$package/share/applications/deskcomm-i2p.desktop"
+          icon=".linux-check/$package/share/icons/hicolor/128x128/apps/deskcomm-i2p.png"
+          test -f "$desktop_entry"
+          test -f "$icon"
+          desktop-file-validate "$desktop_entry"
+          grep -qx 'Exec=deskcomm-i2p' "$desktop_entry"
+          grep -qx 'Icon=deskcomm-i2p' "$desktop_entry"
+          file "$icon" | grep -q 'PNG image data, 128 x 128'
           (
             cd dist
             sha256sum --check SHA256SUMS

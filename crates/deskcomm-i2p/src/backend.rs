@@ -3,7 +3,7 @@
 //! Slint callbacks never drive async networking directly. Commands cross into this thread, while
 //! immutable snapshots and typed events cross back to the UI thread.
 
-use commtools_core::{ApplicationPhase, VaultLease, VaultRepository};
+use commtools_core::{ApplicationPhase, VaultError, VaultLease, VaultRepository};
 use commtools_runtime::{
     ApplicationDriver, ApplicationDriverConfig, CommToolsCommand, CommToolsCommandResult,
     CommToolsSnapshot, FrontendEvent,
@@ -22,6 +22,12 @@ pub enum BackendCommand {
         passphrase: Zeroizing<String>,
         create: bool,
     },
+    RecoverPlaintext {
+        passphrase: Zeroizing<String>,
+    },
+    RestoreEncryptedVault {
+        passphrase: Zeroizing<String>,
+    },
     Runtime(CommToolsCommand),
     Shutdown,
 }
@@ -29,6 +35,7 @@ pub enum BackendCommand {
 #[derive(Debug)]
 pub enum BackendEvent {
     GateFailed(String),
+    PlaintextRecoveryRequired { encrypted_vault_exists: bool },
     Ready(CommToolsSnapshot),
     Snapshot(CommToolsSnapshot),
     Frontend(FrontendEvent),
@@ -132,11 +139,38 @@ async fn backend_loop(
         tokio::select! {
             command = commands.recv() => {
                 match command {
-                    Some(BackendCommand::OpenVault { passphrase, create }) if driver.is_none() && !shutting_down => {
-                        let result = if create {
-                            repository.create(passphrase.as_bytes())
-                        } else {
-                            repository.unlock(passphrase.as_bytes())
+                    Some(command @ (
+                        BackendCommand::OpenVault { .. }
+                        | BackendCommand::RecoverPlaintext { .. }
+                        | BackendCommand::RestoreEncryptedVault { .. }
+                    )) if driver.is_none() && !shutting_down => {
+                        let result = match command {
+                            BackendCommand::OpenVault { passphrase, create } => {
+                                if create {
+                                    repository.create(passphrase.as_bytes())
+                                } else {
+                                    repository.unlock(passphrase.as_bytes())
+                                }
+                            }
+                            BackendCommand::RecoverPlaintext { passphrase } => {
+                                match repository.exists() {
+                                    Ok(true) => repository
+                                        .recover_existing_plaintext(passphrase.as_bytes()),
+                                    Ok(false) => repository
+                                        .adopt_initial_plaintext(passphrase.as_bytes()),
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            BackendCommand::RestoreEncryptedVault { passphrase } => {
+                                match repository.exists() {
+                                    Ok(true) => repository
+                                        .discard_plaintext_and_unlock(passphrase.as_bytes()),
+                                    Ok(false) => repository
+                                        .discard_plaintext_and_create(passphrase.as_bytes()),
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            _ => unreachable!("vault-opening command was matched above"),
                         };
                         match result {
                             Ok(vault) => {
@@ -159,12 +193,31 @@ async fn backend_loop(
                                     }
                                 }
                             }
+                            Err(VaultError::PlaintextPresent) => {
+                                match repository.exists() {
+                                    Ok(encrypted_vault_exists) => {
+                                        let _ = events.send(
+                                            BackendEvent::PlaintextRecoveryRequired {
+                                                encrypted_vault_exists,
+                                            },
+                                        );
+                                    }
+                                    Err(error) => {
+                                        let _ = events
+                                            .send(BackendEvent::GateFailed(error.to_string()));
+                                    }
+                                }
+                            }
                             Err(error) => {
                                 let _ = events.send(BackendEvent::GateFailed(error.to_string()));
                             }
                         }
                     }
-                    Some(BackendCommand::OpenVault { .. }) => {}
+                    Some(
+                        BackendCommand::OpenVault { .. }
+                        | BackendCommand::RecoverPlaintext { .. }
+                        | BackendCommand::RestoreEncryptedVault { .. }
+                    ) => {}
                     Some(BackendCommand::Runtime(command)) if driver.is_some() && !shutting_down => {
                         let active_driver = driver.as_mut().expect("driver checked above");
                         match active_driver.dispatch_command(command) {

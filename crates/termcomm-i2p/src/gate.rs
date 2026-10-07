@@ -30,6 +30,17 @@ enum GateStage {
     Unlock,
     SetPassphrase,
     ConfirmPassphrase,
+    RecoveryChoice,
+    RecoveryDiscardConfirmation,
+    RecoveryPassphrase,
+    RecoverySetPassphrase,
+    RecoveryConfirmPassphrase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoverySelection {
+    Recover,
+    Discard,
 }
 
 pub async fn run(
@@ -68,6 +79,8 @@ struct GateState {
     first: String,
     current: String,
     error: Option<String>,
+    recovery_encrypted_vault: bool,
+    recovery_selection: RecoverySelection,
 }
 
 impl GateState {
@@ -77,6 +90,8 @@ impl GateState {
             first: String::new(),
             current: String::new(),
             error: None,
+            recovery_encrypted_vault: false,
+            recovery_selection: RecoverySelection::Recover,
         }
     }
 
@@ -90,16 +105,42 @@ impl GateState {
         {
             return Ok(GateAction::Quit);
         }
+        if self.stage == GateStage::RecoveryChoice {
+            return self.handle_recovery_choice(key);
+        }
+        if self.stage == GateStage::RecoveryDiscardConfirmation {
+            return self.handle_recovery_discard_confirmation(key);
+        }
         match key.code {
-            KeyCode::Char(character) => self.push(character),
+            KeyCode::Char(character) if self.accepts_passphrase() => self.push(character),
             KeyCode::Backspace => {
                 self.current.pop();
                 self.error = None;
             }
             KeyCode::Enter => return self.submit(repository),
-            KeyCode::Esc if self.stage == GateStage::ConfirmPassphrase => {
+            KeyCode::Esc
+                if matches!(
+                    self.stage,
+                    GateStage::ConfirmPassphrase | GateStage::RecoveryConfirmPassphrase
+                ) =>
+            {
                 self.clear_secrets();
-                self.stage = GateStage::SetPassphrase;
+                self.stage = if self.stage == GateStage::ConfirmPassphrase {
+                    GateStage::SetPassphrase
+                } else {
+                    GateStage::RecoverySetPassphrase
+                };
+                self.error = None;
+            }
+            KeyCode::Esc
+                if matches!(
+                    self.stage,
+                    GateStage::RecoveryPassphrase | GateStage::RecoverySetPassphrase
+                ) =>
+            {
+                self.clear_secrets();
+                self.stage = GateStage::RecoveryChoice;
+                self.recovery_selection = RecoverySelection::Recover;
                 self.error = None;
             }
             KeyCode::Esc => return Ok(GateAction::Quit),
@@ -109,9 +150,67 @@ impl GateState {
     }
 
     fn paste(&mut self, value: &str) {
+        if !self.accepts_passphrase() {
+            return;
+        }
         for character in value.chars().filter(|character| !character.is_control()) {
             self.push(character);
         }
+    }
+
+    fn accepts_passphrase(&self) -> bool {
+        !matches!(
+            self.stage,
+            GateStage::RecoveryChoice | GateStage::RecoveryDiscardConfirmation
+        )
+    }
+
+    fn handle_recovery_choice(&mut self, key: KeyEvent) -> Result<GateAction, VaultError> {
+        match key.code {
+            KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab => {
+                self.recovery_selection = match self.recovery_selection {
+                    RecoverySelection::Recover => RecoverySelection::Discard,
+                    RecoverySelection::Discard => RecoverySelection::Recover,
+                };
+                self.error = None;
+            }
+            KeyCode::Enter => match self.recovery_selection {
+                RecoverySelection::Recover => self.begin_recovery_credentials(),
+                RecoverySelection::Discard => {
+                    self.stage = GateStage::RecoveryDiscardConfirmation;
+                    self.error = None;
+                }
+            },
+            KeyCode::Esc => return Ok(GateAction::Quit),
+            _ => {}
+        }
+        Ok(GateAction::Continue)
+    }
+
+    fn handle_recovery_discard_confirmation(
+        &mut self,
+        key: KeyEvent,
+    ) -> Result<GateAction, VaultError> {
+        match key.code {
+            KeyCode::Char('y') => self.begin_recovery_credentials(),
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.stage = GateStage::RecoveryChoice;
+                self.recovery_selection = RecoverySelection::Recover;
+                self.error = None;
+            }
+            _ => {}
+        }
+        Ok(GateAction::Continue)
+    }
+
+    fn begin_recovery_credentials(&mut self) {
+        self.clear_secrets();
+        self.stage = if self.recovery_encrypted_vault {
+            GateStage::RecoveryPassphrase
+        } else {
+            GateStage::RecoverySetPassphrase
+        };
+        self.error = None;
     }
 
     fn push(&mut self, character: char) {
@@ -135,6 +234,7 @@ impl GateState {
                     self.error = Some("Passphrase is invalid or the vault is damaged.".into());
                     Ok(GateAction::Continue)
                 }
+                Err(VaultError::PlaintextPresent) => self.begin_recovery(repository),
                 Err(error) => Err(error),
             },
             GateStage::SetPassphrase => {
@@ -152,9 +252,94 @@ impl GateState {
                     self.error = Some("Passphrases do not match.".into());
                     return Ok(GateAction::Continue);
                 }
-                repository
-                    .create(self.current.as_bytes())
-                    .map(GateAction::Unlocked)
+                match repository.create(self.current.as_bytes()) {
+                    Ok(vault) => Ok(GateAction::Unlocked(vault)),
+                    Err(VaultError::PlaintextPresent) => self.begin_recovery(repository),
+                    Err(error) => Err(error),
+                }
+            }
+            GateStage::RecoveryPassphrase => self.submit_existing_recovery(repository),
+            GateStage::RecoverySetPassphrase => {
+                self.first.zeroize();
+                std::mem::swap(&mut self.first, &mut self.current);
+                self.current.clear();
+                self.stage = GateStage::RecoveryConfirmPassphrase;
+                self.error = None;
+                Ok(GateAction::Continue)
+            }
+            GateStage::RecoveryConfirmPassphrase => {
+                if self.first.as_bytes() != self.current.as_bytes() {
+                    self.clear_secrets();
+                    self.stage = GateStage::RecoverySetPassphrase;
+                    self.error = Some("Passphrases do not match.".into());
+                    return Ok(GateAction::Continue);
+                }
+                self.submit_initial_recovery(repository)
+            }
+            GateStage::RecoveryChoice | GateStage::RecoveryDiscardConfirmation => {
+                Ok(GateAction::Continue)
+            }
+        }
+    }
+
+    fn begin_recovery(&mut self, repository: &VaultRepository) -> Result<GateAction, VaultError> {
+        self.clear_secrets();
+        self.recovery_encrypted_vault = repository.exists()?;
+        self.recovery_selection = RecoverySelection::Recover;
+        self.stage = GateStage::RecoveryChoice;
+        self.error = Some(if self.recovery_encrypted_vault {
+            "Plaintext recovery data exists beside the encrypted vault.".into()
+        } else {
+            "Plaintext recovery data exists from an interrupted initial vault.".into()
+        });
+        Ok(GateAction::Continue)
+    }
+
+    fn submit_existing_recovery(
+        &mut self,
+        repository: &VaultRepository,
+    ) -> Result<GateAction, VaultError> {
+        let result = match self.recovery_selection {
+            RecoverySelection::Recover => {
+                repository.recover_existing_plaintext(self.current.as_bytes())
+            }
+            RecoverySelection::Discard => {
+                repository.discard_plaintext_and_unlock(self.current.as_bytes())
+            }
+        };
+        self.finish_recovery_attempt(result)
+    }
+
+    fn submit_initial_recovery(
+        &mut self,
+        repository: &VaultRepository,
+    ) -> Result<GateAction, VaultError> {
+        let result = match self.recovery_selection {
+            RecoverySelection::Recover => {
+                repository.adopt_initial_plaintext(self.current.as_bytes())
+            }
+            RecoverySelection::Discard => {
+                repository.discard_plaintext_and_create(self.current.as_bytes())
+            }
+        };
+        self.finish_recovery_attempt(result)
+    }
+
+    fn finish_recovery_attempt(
+        &mut self,
+        result: Result<UnlockedVault, VaultError>,
+    ) -> Result<GateAction, VaultError> {
+        match result {
+            Ok(vault) => Ok(GateAction::Unlocked(vault)),
+            Err(error) => {
+                self.clear_secrets();
+                self.stage = if self.recovery_encrypted_vault {
+                    GateStage::RecoveryPassphrase
+                } else {
+                    GateStage::RecoverySetPassphrase
+                };
+                self.error = Some(error.to_string());
+                Ok(GateAction::Continue)
             }
         }
     }
@@ -190,7 +375,14 @@ fn draw(terminal: &mut TerminalSession, gate: &GateState) -> io::Result<()> {
 
 fn render(frame: &mut Frame<'_>, gate: &GateState) {
     let area = frame.area();
-    let panel = centered_rect(62, 11, area);
+    let recovery_choice = gate.stage == GateStage::RecoveryChoice;
+    let recovery_confirmation = gate.stage == GateStage::RecoveryDiscardConfirmation;
+    let panel_height = if recovery_choice || recovery_confirmation {
+        17
+    } else {
+        11
+    };
+    let panel = centered_rect(72, panel_height, area);
     frame.render_widget(
         Block::default().style(Style::default().bg(Color::Black)),
         area,
@@ -200,6 +392,11 @@ fn render(frame: &mut Frame<'_>, gate: &GateState) {
         GateStage::Unlock => "Unlock vault",
         GateStage::SetPassphrase => "Set vault passphrase",
         GateStage::ConfirmPassphrase => "Confirm vault passphrase",
+        GateStage::RecoveryChoice => "Vault recovery required",
+        GateStage::RecoveryDiscardConfirmation => "Confirm destructive recovery",
+        GateStage::RecoveryPassphrase => "Enter the existing vault passphrase",
+        GateStage::RecoverySetPassphrase => "Set a new vault passphrase",
+        GateStage::RecoveryConfirmPassphrase => "Confirm the new vault passphrase",
     };
     let mask_len = gate.current.chars().count().min(MAX_VISIBLE_MASK);
     let prefix = if gate.current.chars().count() > MAX_VISIBLE_MASK {
@@ -209,7 +406,7 @@ fn render(frame: &mut Frame<'_>, gate: &GateState) {
     };
     let masked = format!("{prefix}{}", "*".repeat(mask_len));
     let error = gate.error.as_deref().unwrap_or("");
-    let body = vec![
+    let mut body = vec![
         Line::from(Span::styled(
             "TermComm-I2P",
             Style::default()
@@ -218,11 +415,80 @@ fn render(frame: &mut Frame<'_>, gate: &GateState) {
         )),
         Line::from(""),
         Line::from(prompt),
-        Line::from(""),
-        Line::from(Span::styled(masked, Style::default().fg(Color::Green))),
+    ];
+    if recovery_choice {
+        let recover_style = if gate.recovery_selection == RecoverySelection::Recover {
+            Style::default().fg(Color::Black).bg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let discard_style = if gate.recovery_selection == RecoverySelection::Discard {
+            Style::default().fg(Color::Black).bg(Color::Red)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let (recover_label, recover_description, discard_label, discard_description) =
+            if gate.recovery_encrypted_vault {
+                (
+                    " Recover newest session data (Recommended) ",
+                    "Keeps changes from the interrupted session.",
+                    " Roll back to last encrypted vault ",
+                    "Discards changes from the interrupted session.",
+                )
+            } else {
+                (
+                    " Recover existing data (Recommended) ",
+                    "Keeps the data created before the interruption.",
+                    " Discard data and create an empty vault ",
+                    "Permanently deletes the interrupted vault data.",
+                )
+            };
+        body.extend([
+            Line::from(""),
+            Line::from("The previous session ended before working data could be encrypted."),
+            Line::from(""),
+            Line::from(Span::styled(recover_label, recover_style)),
+            Line::from(Span::styled(
+                recover_description,
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(discard_label, discard_style)),
+            Line::from(Span::styled(
+                discard_description,
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(""),
+            Line::from("Up/Down selects  Enter continues  Esc quits"),
+        ]);
+    } else if recovery_confirmation {
+        body.extend([
+            Line::from(""),
+            Line::from(if gate.recovery_encrypted_vault {
+                "Roll back to the last encrypted vault?"
+            } else {
+                "Discard the interrupted vault data and start over?"
+            }),
+            Line::from(if gate.recovery_encrypted_vault {
+                "All changes from the interrupted session will be permanently lost."
+            } else {
+                "All existing local data will be permanently lost."
+            }),
+            Line::from(""),
+            Line::from(Span::styled(
+                "y confirms  n/Esc cancels",
+                Style::default().fg(Color::Red),
+            )),
+        ]);
+    } else {
+        body.extend([
+            Line::from(""),
+            Line::from(Span::styled(masked, Style::default().fg(Color::Green))),
+        ]);
+    }
+    body.extend([
         Line::from(""),
         Line::from(Span::styled(error, Style::default().fg(Color::Red))),
-    ];
+    ]);
     let widget = Paragraph::new(body)
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: false })

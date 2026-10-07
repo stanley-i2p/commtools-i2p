@@ -12,17 +12,31 @@ project_dir="$(cd -- "$script_dir/.." && pwd)"
 dist_dir="$project_dir/dist"
 stage_dir="$project_dir/.deskcomm-linux-package"
 binary="$project_dir/target/release/deskcomm-i2p"
+desktop_file="$project_dir/packaging/linux/deskcomm-i2p.desktop"
+icon="$project_dir/crates/deskcomm-i2p/assets/commtools-i2p.png"
 package_name="deskcomm-i2p-v${version}-linux-x86_64-gnu"
 package_dir="$stage_dir/$package_name"
 
+for required in "$binary" "$desktop_file" "$icon"; do
+    if [[ ! -f "$required" ]]; then
+        echo "Required DeskComm packaging input is missing: $required" >&2
+        exit 1
+    fi
+done
+
 if [[ ! -x "$binary" ]]; then
-    echo "Release binary is missing or is not executable: $binary" >&2
+    echo "Release binary is not executable: $binary" >&2
     exit 1
 fi
 
 rm -rf -- "$stage_dir" "$dist_dir"
-mkdir -p -- "$package_dir" "$dist_dir"
+mkdir -p -- \
+    "$package_dir/share/applications" \
+    "$package_dir/share/icons/hicolor/128x128/apps" \
+    "$dist_dir"
 install -m 755 -- "$binary" "$package_dir/deskcomm-i2p"
+install -m 644 -- "$desktop_file" "$package_dir/share/applications/deskcomm-i2p.desktop"
+install -m 644 -- "$icon" "$package_dir/share/icons/hicolor/128x128/apps/deskcomm-i2p.png"
 
 tar \
     --sort=name \

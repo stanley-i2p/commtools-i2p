@@ -447,6 +447,7 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
     let clipboard = Rc::new(RefCell::new(None));
 
     ui.set_application_title(format!("DeskComm-I2P {}", env!("CARGO_PKG_VERSION")).into());
+    ui.set_application_version(env!("CARGO_PKG_VERSION").into());
     ui.set_screen(if vault_exists { 0 } else { 1 });
     ui.set_vault_path(options.data_dir.display().to_string().into());
     let vault_animation = Rc::new(vault_animation::start(&ui));
@@ -565,6 +566,75 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
         if let Err(error) = command_sender.send(BackendCommand::OpenVault {
             passphrase: Zeroizing::new(password.to_string()),
             create,
+        }) {
+            ui.set_busy(false);
+            ui.set_gate_error(error.into());
+        }
+    });
+
+    let recover_sender = backend.sender();
+    let recover_ui = ui.as_weak();
+    ui.on_recover_plaintext(move |password| {
+        let Some(ui) = recover_ui.upgrade() else {
+            return;
+        };
+        if ui.get_busy() {
+            return;
+        }
+        if password.is_empty() {
+            ui.set_gate_error("Passphrase must not be empty".into());
+            return;
+        }
+        if !ui.get_plaintext_recovery_has_encrypted_vault() && password != ui.get_confirm_password()
+        {
+            ui.set_gate_error("Passphrases do not match".into());
+            return;
+        }
+
+        ui.set_busy(true);
+        ui.set_gate_error("Recovering plaintext vault state...".into());
+        ui.set_password("".into());
+        ui.set_confirm_password("".into());
+        if let Err(error) = recover_sender.send(BackendCommand::RecoverPlaintext {
+            passphrase: Zeroizing::new(password.to_string()),
+        }) {
+            ui.set_busy(false);
+            ui.set_gate_error(error.into());
+        }
+    });
+
+    let restore_sender = backend.sender();
+    let restore_ui = ui.as_weak();
+    ui.on_restore_encrypted_vault(move |password| {
+        let Some(ui) = restore_ui.upgrade() else {
+            return;
+        };
+        if ui.get_busy() {
+            return;
+        }
+        if password.is_empty() {
+            ui.set_gate_error("Passphrase must not be empty".into());
+            return;
+        }
+        if !ui.get_plaintext_recovery_has_encrypted_vault() && password != ui.get_confirm_password()
+        {
+            ui.set_gate_error("Passphrases do not match".into());
+            return;
+        }
+
+        ui.set_busy(true);
+        ui.set_gate_error(
+            if ui.get_plaintext_recovery_has_encrypted_vault() {
+                "Restoring the encrypted vault..."
+            } else {
+                "Creating an empty vault..."
+            }
+            .into(),
+        );
+        ui.set_password("".into());
+        ui.set_confirm_password("".into());
+        if let Err(error) = restore_sender.send(BackendCommand::RestoreEncryptedVault {
+            passphrase: Zeroizing::new(password.to_string()),
         }) {
             ui.set_busy(false);
             ui.set_gate_error(error.into());
@@ -2971,7 +3041,21 @@ fn run_desktop(options: StartupOptions) -> Result<(), AppError> {
                     ui.set_busy(false);
                     ui.set_gate_error(error.into());
                 }
+                BackendEvent::PlaintextRecoveryRequired {
+                    encrypted_vault_exists,
+                } => {
+                    ui.set_plaintext_recovery_required(true);
+                    ui.set_plaintext_recovery_has_encrypted_vault(encrypted_vault_exists);
+                    ui.set_plaintext_discard_confirm(false);
+                    ui.set_password("".into());
+                    ui.set_confirm_password("".into());
+                    ui.set_busy(false);
+                    ui.set_gate_error("".into());
+                }
                 BackendEvent::Ready(snapshot) => {
+                    ui.set_plaintext_recovery_required(false);
+                    ui.set_plaintext_recovery_has_encrypted_vault(false);
+                    ui.set_plaintext_discard_confirm(false);
                     vault_animation_for_events.stop();
                     apply_snapshot(
                         &ui,

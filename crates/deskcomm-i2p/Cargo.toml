@@ -18,3 +18,6 @@ zeroize = "1"
 [build-dependencies]
 lucide-slint = "=1.43.0"
 slint-build = "=1.17.1"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

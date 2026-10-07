@@ -1269,7 +1269,9 @@ component LogRow inherits Rectangle {
 
 export component AppWindow inherits Window {
     in property <string> application-title: "DeskComm-I2P";
+    in property <string> application-version: "";
     title: root.application-title;
+    icon: @image-url("../assets/commtools-i2p.png");
     preferred-width: 1280px;
     preferred-height: 800px;
     min-width: 1280px;
@@ -1281,10 +1283,15 @@ export component AppWindow inherits Window {
     in-out property <string> gate-error: "";
     in-out property <string> password: "";
     in-out property <string> confirm-password: "";
+    in-out property <bool> plaintext-recovery-required: false;
+    in-out property <bool> plaintext-recovery-has-encrypted-vault: false;
+    in-out property <bool> plaintext-discard-confirm: false;
     in property <string> vault-path: "";
     in property <[VaultAnimationNode]> vault-animation-nodes;
     in property <string> vault-animation-background-edges: "";
     in property <string> vault-animation-active-edges: "";
+    in-out property <int> vault-animation-hop-count: 0;
+    in-out property <int> vault-animation-curve-percent: 5;
     in property <[CatalogItem]> contacts;
     in property <[CatalogItem]> groups;
     in property <[SessionItem]> sessions;
@@ -1410,6 +1417,8 @@ export component AppWindow inherits Window {
     in-out property <int> group-confirmation: 0;
 
     callback submit-gate(string, string);
+    callback recover-plaintext(string);
+    callback restore-encrypted-vault(string);
     callback create-contact(string);
     callback open-transient(string);
     callback open-contact(int);
@@ -1516,7 +1525,7 @@ export component AppWindow inherits Window {
                     width: 340px;
                     height: parent.height;
                     alignment: center;
-                    spacing: 12px;
+                    spacing: root.plaintext-recovery-required ? 8px : 12px;
 
                     Image {
                         source: @image-url("../assets/commtools-Logo-Plain-vectorised.svg");
@@ -1533,6 +1542,12 @@ export component AppWindow inherits Window {
                         horizontal-alignment: center;
                     }
                     Text {
+                        text: "Version " + root.application-version;
+                        color: #6f8086;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                    }
+                    Text {
                         text: "CommTools desktop client";
                         color: #91a1a7;
                         font-size: 13px;
@@ -1540,8 +1555,9 @@ export component AppWindow inherits Window {
                     }
                     Rectangle { height: 12px; background: transparent; }
                     Text {
-                        text: root.screen == 1 ? "Create encrypted vault" :
-                              root.screen == 3 ? "Closing encrypted vault" : "Unlock encrypted vault";
+                        text: root.screen == 3 ? "Closing encrypted vault" :
+                              root.plaintext-recovery-required ? "Vault recovery required" :
+                              root.screen == 1 ? "Create encrypted vault" : "Unlock encrypted vault";
                         color: #d7e2e5;
                         font-size: 16px;
                         horizontal-alignment: center;
@@ -1557,15 +1573,17 @@ export component AppWindow inherits Window {
                         width: 340px;
                         text <=> root.password;
                         input-type: InputType.password;
-                        placeholder-text: "Passphrase";
+                        placeholder-text: root.plaintext-recovery-required
+                            && !root.plaintext-recovery-has-encrypted-vault
+                            ? "New passphrase" : "Passphrase";
                         enabled: !root.busy && root.screen != 3;
                         accepted(value) => {
-                            if root.screen == 0 {
+                            if root.screen == 0 && !root.plaintext-recovery-required {
                                 root.submit-gate(value, "");
                             }
                         }
                     }
-                    if root.screen == 1: LineEdit {
+                    if root.screen == 1 && !root.plaintext-recovery-required: LineEdit {
                         width: 340px;
                         text <=> root.confirm-password;
                         input-type: InputType.password;
@@ -1573,11 +1591,115 @@ export component AppWindow inherits Window {
                         enabled: !root.busy;
                         accepted(value) => { root.submit-gate(root.password, value); }
                     }
-                    Button {
+                    if root.plaintext-recovery-required
+                        && !root.plaintext-recovery-has-encrypted-vault: LineEdit {
+                        width: 340px;
+                        text <=> root.confirm-password;
+                        input-type: InputType.password;
+                        placeholder-text: "Confirm new passphrase";
+                        enabled: !root.busy;
+                    }
+                    if !root.plaintext-recovery-required: Button {
                         width: 340px;
                         text: root.busy ? "Please wait" : (root.screen == 1 ? "Create vault" : "Unlock");
                         enabled: !root.busy && root.screen != 3 && root.password != "";
                         clicked => { root.submit-gate(root.password, root.confirm-password); }
+                    }
+                    if root.plaintext-recovery-required && !root.plaintext-discard-confirm: VerticalLayout {
+                        width: 340px;
+                        spacing: 8px;
+
+                        Text {
+                            width: 340px;
+                            text: "The previous session ended before working data could be encrypted.";
+                            color: #91a1a7;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Button {
+                            width: 340px;
+                            text: root.plaintext-recovery-has-encrypted-vault
+                                ? "Recover newest session data" : "Recover existing data";
+                            enabled: !root.busy && root.password != ""
+                                && (root.plaintext-recovery-has-encrypted-vault
+                                    || root.password == root.confirm-password);
+                            clicked => { root.recover-plaintext(root.password); }
+                        }
+                        Text {
+                            width: 340px;
+                            text: root.plaintext-recovery-has-encrypted-vault
+                                ? "Recommended · Keeps changes from the interrupted session."
+                                : "Recommended · Keeps the data created before the interruption.";
+                            color: #70c990;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Button {
+                            width: 340px;
+                            text: root.plaintext-recovery-has-encrypted-vault
+                                ? "Roll back to last encrypted vault"
+                                : "Discard data and create an empty vault";
+                            enabled: !root.busy && root.password != ""
+                                && (root.plaintext-recovery-has-encrypted-vault
+                                    || root.password == root.confirm-password);
+                            clicked => { root.plaintext-discard-confirm = true; }
+                        }
+                        Text {
+                            width: 340px;
+                            text: root.plaintext-recovery-has-encrypted-vault
+                                ? "Discards changes from the interrupted session."
+                                : "Permanently deletes the interrupted vault data.";
+                            color: #91a1a7;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                    if root.plaintext-recovery-required && root.plaintext-discard-confirm: VerticalLayout {
+                        width: 340px;
+                        spacing: 8px;
+
+                        Text {
+                            width: 340px;
+                            text: root.plaintext-recovery-has-encrypted-vault
+                                ? "Roll back to the last encrypted vault?"
+                                : "Discard the interrupted vault data and start over?";
+                            color: #e17878;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            width: 340px;
+                            text: root.plaintext-recovery-has-encrypted-vault
+                                ? "All changes from the interrupted session will be permanently lost."
+                                : "All existing local data will be permanently lost.";
+                            color: #e17878;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            width: 340px;
+                            spacing: 8px;
+                            Button {
+                                horizontal-stretch: 1;
+                                text: "Cancel";
+                                enabled: !root.busy;
+                                clicked => { root.plaintext-discard-confirm = false; }
+                            }
+                            Button {
+                                horizontal-stretch: 1;
+                                text: root.plaintext-recovery-has-encrypted-vault
+                                    ? "Roll back" : "Discard and create";
+                                enabled: !root.busy && root.password != ""
+                                    && (root.plaintext-recovery-has-encrypted-vault
+                                        || root.password == root.confirm-password);
+                                clicked => { root.restore-encrypted-vault(root.password); }
+                            }
+                        }
                     }
                     Text {
                         width: 340px;
@@ -1606,6 +1728,8 @@ export component AppWindow inherits Window {
                 nodes: root.vault-animation-nodes;
                 background-edges: root.vault-animation-background-edges;
                 active-edges: root.vault-animation-active-edges;
+                transitional-node-count <=> root.vault-animation-hop-count;
+                curve-percent <=> root.vault-animation-curve-percent;
             }
 
             if root.screen == 3: Rectangle {
@@ -3350,6 +3474,18 @@ export component AppWindow inherits Window {
                                 && root.selected-group-member-removable;
                             clicked => { root.group-confirmation = 1; }
                         }
+                        if root.group-confirmation == 1: InspectorConfirmation {
+                            message: "Remove the selected member?";
+                            controls-enabled: !root.operation-busy;
+                            outline-color: #46565c;
+                            confirmed => {
+                                root.remove-group-member(
+                                    root.selected-group,
+                                    root.selected-group-member
+                                );
+                            }
+                            cancelled => { root.group-confirmation = 0; }
+                        }
 
                         Rectangle { height: 1px; background: #344148; }
                         CommandButton {
@@ -3474,9 +3610,8 @@ export component AppWindow inherits Window {
                             }
                         }
 
-                            if root.group-confirmation != 0: InspectorConfirmation {
-                                message: root.group-confirmation == 1 ? "Remove the selected member?"
-                                    : root.group-confirmation == 2 ? "Request removal from the owner's signed roster?"
+                            if root.group-confirmation != 0 && root.group-confirmation != 1: InspectorConfirmation {
+                                message: root.group-confirmation == 2 ? "Request removal from the owner's signed roster?"
                                     : root.group-confirmation == 3 ? "Owner unavailable. Leave locally with stale peers possible?"
                                     : root.group-confirmation == 4 ? "Dissolve this group for connected participants?"
                                     : root.group-confirmation == 5 ? "Delete this group's local record and history without notifying members?"
@@ -3484,12 +3619,7 @@ export component AppWindow inherits Window {
                                 controls-enabled: !root.operation-busy;
                                 outline-color: root.group-confirmation >= 3 ? #8b5d5d : #46565c;
                                 confirmed => {
-                                    if root.group-confirmation == 1 {
-                                        root.remove-group-member(
-                                            root.selected-group,
-                                            root.selected-group-member
-                                        );
-                                    } else if root.group-confirmation == 2 {
+                                    if root.group-confirmation == 2 {
                                         root.leave-group(root.selected-group, false);
                                     } else if root.group-confirmation == 3 {
                                         root.leave-group(root.selected-group, true);

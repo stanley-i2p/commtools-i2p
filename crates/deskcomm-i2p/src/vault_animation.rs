@@ -3,7 +3,7 @@ use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const NODE_COUNT: usize = 25;
-const TRANSITIONAL_NODE_COUNT: usize = 0;
+const MAX_TRANSITIONAL_NODE_COUNT: usize = 4;
 const MAX_RECEIVER_COUNT: usize = 10;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const HOP_REVEAL_INTERVAL: Duration = Duration::from_millis(140);
@@ -13,11 +13,11 @@ const DRIFT_FACTOR: f32 = 0.005;
 const TARGET_REACHED_DISTANCE: f32 = 5.0;
 const NODE_SIZE: f32 = 5.0; //7.0
 const ACTIVE_NODE_SIZE_MULTIPLIER: f32 = 1.2;
-const ACTIVE_EDGE_CURVATURE: f32 = 0.0; //0.12
+const MAX_ACTIVE_EDGE_CURVATURE: f32 = 0.3;
 const ACTIVE_EDGE_MAX_CURVE_OFFSET: f32 = 36.0;
-const CANVAS_WIDTH: f32 = 800.0;
-const CANVAS_HEIGHT: f32 = 500.0;
-const CANVAS_MARGIN: f32 = 50.0;
+const CANVAS_WIDTH: f32 = 720.0;
+const CANVAS_HEIGHT: f32 = 680.0;
+const CANVAS_MARGIN: f32 = 40.0;
 
 struct PhysicsNode {
     x: f32,
@@ -95,7 +95,7 @@ impl VaultAnimationController {
 }
 
 pub(crate) fn start(ui: &AppWindow) -> VaultAnimationController {
-    assert!(NODE_COUNT >= TRANSITIONAL_NODE_COUNT.saturating_add(2));
+    assert!(NODE_COUNT >= MAX_TRANSITIONAL_NODE_COUNT.saturating_add(2));
     assert!(MAX_RECEIVER_COUNT > 0);
 
     let mut rng = AnimationRng::new();
@@ -121,6 +121,7 @@ pub(crate) fn start(ui: &AppWindow) -> VaultAnimationController {
         &active_paths,
         transmitting,
         revealed_edge_count,
+        configured_curvature(ui),
     );
 
     let ui = ui.as_weak();
@@ -157,7 +158,12 @@ pub(crate) fn start(ui: &AppWindow) -> VaultAnimationController {
             }
         } else if last_state_change.elapsed() > IDLE_COOLDOWN {
             transmitting = true;
-            select_transmission(&mut nodes, &mut active_paths, &mut rng);
+            select_transmission(
+                &mut nodes,
+                &mut active_paths,
+                &mut rng,
+                configured_transitional_node_count(&ui),
+            );
             maximum_edge_count = active_paths
                 .iter()
                 .map(|path| path.len().saturating_sub(1))
@@ -184,6 +190,7 @@ pub(crate) fn start(ui: &AppWindow) -> VaultAnimationController {
             &active_paths,
             transmitting,
             revealed_edge_count,
+            configured_curvature(&ui),
         );
         ui.window().request_redraw();
     });
@@ -195,6 +202,7 @@ fn select_transmission(
     nodes: &mut [PhysicsNode],
     active_paths: &mut Vec<Vec<usize>>,
     rng: &mut AnimationRng,
+    transitional_node_count: usize,
 ) {
     let mut candidates = (0..nodes.len()).collect::<Vec<_>>();
     rng.shuffle(&mut candidates);
@@ -202,14 +210,14 @@ fn select_transmission(
     let sender = candidates[0];
     nodes[sender].state = NodeState::Sender;
     let receiver_capacity =
-        nodes.len().saturating_sub(1) / TRANSITIONAL_NODE_COUNT.saturating_add(1);
+        nodes.len().saturating_sub(1) / transitional_node_count.saturating_add(1);
     let receiver_count = rng.range_usize_inclusive(1, MAX_RECEIVER_COUNT.min(receiver_capacity));
     let mut offset = 1;
 
     for _ in 0..receiver_count {
-        let transition_end = offset + TRANSITIONAL_NODE_COUNT;
+        let transition_end = offset + transitional_node_count;
         let receiver = candidates[transition_end];
-        let mut path = Vec::with_capacity(TRANSITIONAL_NODE_COUNT + 2);
+        let mut path = Vec::with_capacity(transitional_node_count + 2);
         path.push(sender);
         path.extend_from_slice(&candidates[offset..transition_end]);
         path.push(receiver);
@@ -238,6 +246,7 @@ fn publish_frame(
     active_paths: &[Vec<usize>],
     transmitting: bool,
     revealed_edge_count: usize,
+    active_edge_curvature: f32,
 ) {
     let mut background_edges = String::new();
     let mut active_edges = String::new();
@@ -255,7 +264,7 @@ fn publish_frame(
                     first,
                     second,
                     nodes,
-                    ACTIVE_EDGE_CURVATURE,
+                    active_edge_curvature,
                 ));
             } else {
                 background_edges.push_str(&straight_edge_command(first, second, nodes));
@@ -280,6 +289,17 @@ fn publish_frame(
     ui.set_vault_animation_nodes(ModelRc::new(VecModel::from(presented_nodes)));
     ui.set_vault_animation_background_edges(background_edges.into());
     ui.set_vault_animation_active_edges(active_edges.into());
+}
+
+fn configured_transitional_node_count(ui: &AppWindow) -> usize {
+    usize::try_from(ui.get_vault_animation_hop_count())
+        .unwrap_or_default()
+        .min(MAX_TRANSITIONAL_NODE_COUNT)
+}
+
+fn configured_curvature(ui: &AppWindow) -> f32 {
+    (ui.get_vault_animation_curve_percent().clamp(0, 30) as f32 / 100.0)
+        .min(MAX_ACTIVE_EDGE_CURVATURE)
 }
 
 fn straight_edge_command(first: usize, second: usize, nodes: &[PhysicsNode]) -> String {

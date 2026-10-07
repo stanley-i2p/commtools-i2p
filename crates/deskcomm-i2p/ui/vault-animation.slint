@@ -5,24 +5,53 @@ export struct VaultAnimationNode {
     state: int,
 }
 
+component AnimationStepButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 24px;
+    height: 22px;
+    background: !root.enabled ? transparent
+        : step-touch.has-hover ? #24343a : #151f23;
+    border-width: 1px;
+    border-color: root.enabled ? #46565c : #303b40;
+    border-radius: 3px;
+
+    Text {
+        text: root.label;
+        color: root.enabled ? #dce5e7 : #59666b;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    step-touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
 export component VaultAnimation inherits Rectangle {
     in property <[VaultAnimationNode]> nodes;
     in property <string> background-edges;
     in property <string> active-edges;
+    in-out property <int> transitional-node-count: 0;
+    in-out property <int> curve-percent: 5;
     property <color> canvas-color: #0d1316;
     property <color> ambient-edge-color: #34454c;
     property <color> active-edge-color: #70c990;
     property <color> default-node-color: #6687a1;
     property <color> sender-node-color: #70c990;
     property <color> receiver-node-color: #e17878;
-    property <float> canvas-scale: min(root.width / 800px, root.height / 500px);
+    property <float> canvas-scale: min(root.width / 720px, root.height / 680px);
 
     background: root.canvas-color;
     clip: true;
 
     canvas := Rectangle {
-        width: 800px * root.canvas-scale;
-        height: 500px * root.canvas-scale;
+        width: 720px * root.canvas-scale;
+        height: 680px * root.canvas-scale;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: transparent;
@@ -33,8 +62,8 @@ export component VaultAnimation inherits Rectangle {
             stroke: root.ambient-edge-color;
             stroke-width: 0.8px;
             commands: root.background-edges;
-            viewbox-width: 800;
-            viewbox-height: 500;
+            viewbox-width: 720;
+            viewbox-height: 680;
         }
 
         Path {
@@ -43,8 +72,8 @@ export component VaultAnimation inherits Rectangle {
             stroke: root.active-edge-color;
             stroke-width: 1.8px;
             commands: root.active-edges;
-            viewbox-width: 800;
-            viewbox-height: 500;
+            viewbox-width: 720;
+            viewbox-height: 680;
 
             animate stroke { duration: 200ms; easing: ease-in-out; }
         }
@@ -76,6 +105,100 @@ export component VaultAnimation inherits Rectangle {
                 animate background { duration: 300ms; easing: ease-in-out; }
                 animate width { duration: 250ms; easing: ease-out; }
                 animate height { duration: 250ms; easing: ease-out; }
+            }
+        }
+    }
+
+    Rectangle {
+        width: 174px;
+        height: 58px;
+        x: parent.width - self.width - 12px;
+        y: parent.height - self.height - 12px;
+        background: #101719e8;
+        border-width: 1px;
+        border-color: #34454c;
+        border-radius: 4px;
+
+        VerticalLayout {
+            padding: 5px;
+            spacing: 4px;
+
+            HorizontalLayout {
+                height: 22px;
+                spacing: 4px;
+                Text {
+                    width: 62px;
+                    text: "Hops";
+                    color: #91a1a7;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                AnimationStepButton {
+                    label: "-";
+                    enabled: root.transitional-node-count > 0;
+                    clicked => {
+                        root.transitional-node-count = max(0, root.transitional-node-count - 1);
+                    }
+                }
+                Rectangle {
+                    width: 30px;
+                    height: 22px;
+                    background: #0d1316;
+                    border-width: 1px;
+                    border-color: #34454c;
+                    border-radius: 3px;
+                    Text {
+                        text: "" + root.transitional-node-count;
+                        color: #dce5e7;
+                        font-size: 10px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                AnimationStepButton {
+                    label: "+";
+                    enabled: root.transitional-node-count < 4;
+                    clicked => {
+                        root.transitional-node-count = min(4, root.transitional-node-count + 1);
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                height: 22px;
+                spacing: 4px;
+                Text {
+                    width: 62px;
+                    text: "Curve";
+                    color: #91a1a7;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                AnimationStepButton {
+                    label: "-";
+                    enabled: root.curve-percent > 0;
+                    clicked => { root.curve-percent = max(0, root.curve-percent - 5); }
+                }
+                Rectangle {
+                    width: 30px;
+                    height: 22px;
+                    background: #0d1316;
+                    border-width: 1px;
+                    border-color: #34454c;
+                    border-radius: 3px;
+                    Text {
+                        text: "" + root.curve-percent + "%";
+                        color: #dce5e7;
+                        font-size: 10px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                AnimationStepButton {
+                    label: "+";
+                    enabled: root.curve-percent < 30;
+                    clicked => { root.curve-percent = min(30, root.curve-percent + 5); }
+                }
             }
         }
     }
