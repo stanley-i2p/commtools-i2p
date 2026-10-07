@@ -41,9 +41,17 @@ Assert-X64Pe $Binary
 $CheckDir = Join-Path $ProjectDir ".windows-check"
 Remove-Item -LiteralPath $CheckDir -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive -LiteralPath $Archive -DestinationPath $CheckDir
-$PackagedBinary = Join-Path $CheckDir "$Product-$ReleaseTag-windows-x86_64\$Product.exe"
+$ExtractedPackageDir = Join-Path $CheckDir "$Product-$ReleaseTag-windows-x86_64"
+$PackagedBinary = Join-Path $ExtractedPackageDir "$Product.exe"
 if (-not (Test-Path -LiteralPath $PackagedBinary -PathType Leaf)) {
     throw "Packaged Windows binary is missing: $PackagedBinary"
+}
+
+foreach ($Document in @("LICENSE", "NOTICE", "README.md", "COMMERCIAL-LICENSING.md")) {
+    $PackagedDocument = Join-Path $ExtractedPackageDir $Document
+    if (-not (Test-Path -LiteralPath $PackagedDocument -PathType Leaf)) {
+        throw "Packaged licensing document is missing: $PackagedDocument"
+    }
 }
 
 foreach ($Line in Get-Content -LiteralPath $Checksums) {

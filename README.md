@@ -103,3 +103,15 @@ TermComm-I2P (Ratatui)          DeskComm-I2P (Slint)
 `commtools-core` contains the presentation-independent communication and security logic.
 `commtools-runtime` exposes that logic through typed commands, snapshots, and events. Each UI can
 therefore present a different interface while using the same underlying behaviour.
+
+## Licensing
+
+CommTools-I2P is available under the
+[GNU Affero General Public License, version 3 only](LICENSE). Commercial use
+under the AGPL is permitted subject to its terms.
+
+Alternative proprietary commercial licensing may be available for
+organizations requiring different terms. See
+[COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md).
+
+Third-party components remain governed by their respective licenses.

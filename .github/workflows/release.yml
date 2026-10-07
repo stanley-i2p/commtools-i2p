@@ -196,6 +196,9 @@ jobs:
           mkdir -p .linux-check
           tar -xzf "$archive" -C .linux-check
           test -x ".linux-check/$package/termcomm-i2p"
+          for document in LICENSE NOTICE README.md COMMERCIAL-LICENSING.md; do
+            test -f ".linux-check/$package/$document"
+          done
           (
             cd dist
             sha256sum --check SHA256SUMS
@@ -296,6 +299,9 @@ jobs:
           grep -qx 'Exec=deskcomm-i2p' "$desktop_entry"
           grep -qx 'Icon=deskcomm-i2p' "$desktop_entry"
           file "$icon" | grep -q 'PNG image data, 128 x 128'
+          for document in LICENSE NOTICE README.md COMMERCIAL-LICENSING.md; do
+            test -f ".linux-check/$package/$document"
+          done
           (
             cd dist
             sha256sum --check SHA256SUMS

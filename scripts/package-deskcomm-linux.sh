@@ -14,10 +14,16 @@ stage_dir="$project_dir/.deskcomm-linux-package"
 binary="$project_dir/target/release/deskcomm-i2p"
 desktop_file="$project_dir/packaging/linux/deskcomm-i2p.desktop"
 icon="$project_dir/crates/deskcomm-i2p/assets/commtools-i2p.png"
+documents=(
+    "$project_dir/LICENSE"
+    "$project_dir/NOTICE"
+    "$project_dir/README.md"
+    "$project_dir/COMMERCIAL-LICENSING.md"
+)
 package_name="deskcomm-i2p-v${version}-linux-x86_64-gnu"
 package_dir="$stage_dir/$package_name"
 
-for required in "$binary" "$desktop_file" "$icon"; do
+for required in "$binary" "$desktop_file" "$icon" "${documents[@]}"; do
     if [[ ! -f "$required" ]]; then
         echo "Required DeskComm packaging input is missing: $required" >&2
         exit 1
@@ -37,6 +43,9 @@ mkdir -p -- \
 install -m 755 -- "$binary" "$package_dir/deskcomm-i2p"
 install -m 644 -- "$desktop_file" "$package_dir/share/applications/deskcomm-i2p.desktop"
 install -m 644 -- "$icon" "$package_dir/share/icons/hicolor/128x128/apps/deskcomm-i2p.png"
+for document in "${documents[@]}"; do
+    install -m 644 -- "$document" "$package_dir/$(basename -- "$document")"
+done
 
 tar \
     --sort=name \
