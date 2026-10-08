@@ -12,7 +12,7 @@ on:
           - build-only
           - draft-release
       release_tag:
-        description: Optional for build-only; required for draft-release (for example, v1.0.0)
+        description: Optional for build-only; required for draft-release (for example, v1.0.1)
         required: false
         type: string
       prerelease:
@@ -72,6 +72,23 @@ jobs:
           fi
 
           version="$termcomm_version"
+          server_version="$(
+            cargo metadata \
+              --manifest-path deaddrop-server/Cargo.toml \
+              --no-deps \
+              --locked \
+              --format-version 1 \
+              | jq -r '.packages[] | select(.name == "deaddrop-server") | .version'
+          )"
+          if [[ -z "$server_version" || "$server_version" == "null" ]]; then
+            echo "Unable to read the DeadDrop server version." >&2
+            exit 1
+          fi
+          if [[ "$server_version" != "$version" ]]; then
+            echo "Release versions differ: CommTools=$version DeadDrop=$server_version." >&2
+            exit 1
+          fi
+
           expected_tag="v${version}"
           release_tag="${REQUESTED_TAG:-$expected_tag}"
           if [[ "$release_tag" != "$expected_tag" ]]; then
@@ -317,6 +334,108 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  test-deaddrop-server:
+    name: Test DeadDrop server (Debian 12)
+    needs: metadata
+    runs-on: ubuntu-24.04
+    container: rust:1.92-bookworm
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out selected revision
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Test server workspace
+        run: cargo test --locked --manifest-path deaddrop-server/Cargo.toml
+
+  build-deaddrop-server-linux:
+    name: Build DeadDrop Server Linux x86_64 GNU (Debian 12)
+    needs:
+      - metadata
+      - test-deaddrop-server
+    runs-on: ubuntu-24.04
+    container: rust:1.92-bookworm
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.names.outputs.artifact_name }}
+
+    steps:
+      - name: Install packaging tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install --yes --no-install-recommends binutils file git
+
+      - name: Check out selected revision
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Define artifact name
+        id: names
+        shell: bash
+        run: echo "artifact_name=deaddrop-server-v${{ needs.metadata.outputs.version }}-linux-x86_64-gnu" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary
+        run: cargo build --release --locked --manifest-path deaddrop-server/Cargo.toml
+
+      - name: Package Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          bash scripts/package-deaddrop-server-linux.sh "${{ needs.metadata.outputs.version }}"
+
+      - name: Validate Linux artifact and Debian 12 ABI baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.metadata.outputs.version }}"
+          archive="dist/deaddrop-server-v$version-linux-x86_64-gnu.tar.gz"
+          package="deaddrop-server-v$version-linux-x86_64-gnu"
+          binary="deaddrop-server/target/release/deaddrop-server"
+
+          test -s "$archive"
+          file "$binary" | grep -Eq 'ELF 64-bit.*x86-64'
+          file "$binary" | grep -q 'dynamically linked'
+          ! ldd "$binary" | grep -q 'not found'
+          max_glibc="$(objdump -T "$binary" | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -n 1)"
+          if [[ "$(printf '%s\n' "$max_glibc" 'GLIBC_2.36' | sort -V | tail -n 1)" != 'GLIBC_2.36' ]]; then
+            echo "Binary requires $max_glibc, newer than the Debian 12 GLIBC_2.36 baseline." >&2
+            exit 1
+          fi
+
+          rm -rf .deaddrop-server-linux-check
+          mkdir -p .deaddrop-server-linux-check
+          tar -xzf "$archive" -C .deaddrop-server-linux-check
+          test -x ".deaddrop-server-linux-check/$package/deaddrop-server"
+          for document in LICENSE NOTICE README.md COMMERCIAL-LICENSING.md; do
+            test -f ".deaddrop-server-linux-check/$package/$document"
+          done
+          "$binary" --version | grep -qx "deaddrop-server $version"
+          "$binary" --help | grep -q '^Usage: deaddrop-server \[OPTIONS\]$'
+
+          (
+            cd dist
+            sha256sum *.tar.gz > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Upload DeadDrop Server Linux artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.names.outputs.artifact_name }}
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
   build-termcomm-windows:
     name: Build TermComm Windows x86_64
     needs:
@@ -420,6 +539,7 @@ jobs:
       - metadata
       - build-termcomm-linux
       - build-deskcomm-linux
+      - build-deaddrop-server-linux
       - build-termcomm-windows
       - build-deskcomm-windows
     runs-on: ubuntu-24.04
@@ -444,6 +564,12 @@ jobs:
         with:
           name: ${{ needs.build-deskcomm-linux.outputs.artifact_name }}
           path: .release-input/deskcomm-linux
+
+      - name: Download DeadDrop Server Linux artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build-deaddrop-server-linux.outputs.artifact_name }}
+          path: .release-input/deaddrop-server-linux
 
       - name: Download TermComm Windows artifacts
         uses: actions/download-artifact@v8
@@ -474,7 +600,7 @@ jobs:
 
           mkdir -p dist
           find .release-input -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp '{}' dist/ \;
-          test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 4
+          test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 5
           (
             cd dist
             sha256sum *.tar.gz *.zip > SHA256SUMS

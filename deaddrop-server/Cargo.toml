@@ -1,0 +1,14 @@
+[package]
+name = "deaddrop-server"
+version = "1.0.1"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/stanley-i2p/commtools-i2p"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+sha2 = "0.10"
+hex = "0.4"
+
+[workspace]
+resolver = "3"

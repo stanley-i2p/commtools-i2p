@@ -4,6 +4,7 @@ This repository contains the CommTools core libraries and applications built on 
 
 - **TermComm-I2P** - Ratatui based terminal client
 - **DeskComm-I2P** - Slint based desktop client
+- **DeadDrop Server** - optional Linux server for replicated offline message storage
 
 ## Build TermComm-I2P
 
@@ -81,6 +82,25 @@ Available options:
 -V, --version    Print version
 ```
 
+## Build the DeadDrop Server
+
+The optional DeadDrop server is maintained in an independent Rust workspace
+inside this repository. It is needed only when hosting infrastructure for
+offline message storage and retrieval.
+
+From the repository root:
+
+```bash
+cargo build --release --locked --manifest-path deaddrop-server/Cargo.toml
+```
+
+The executable will be created at
+`deaddrop-server/target/release/deaddrop-server`.
+
+Official server release binaries are provided for Linux x86_64 GNU only. See
+[`deaddrop-server/README.md`](deaddrop-server/README.md) for configuration,
+data-directory, operation, and migration instructions.
+
 ## Architecture
 
 ```text
@@ -97,7 +117,7 @@ TermComm-I2P (Ratatui)          DeskComm-I2P (Slint)
              (vault and storage logic)
                        |
                        v
-  I2P router and DeadDrop server infrastructure
+  I2P router and optional DeadDrop server infrastructure
 ```
 
 `commtools-core` contains the presentation-independent communication and security logic.

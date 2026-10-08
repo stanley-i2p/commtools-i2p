@@ -1,4 +1,5 @@
 /target/
+/deaddrop-server/target/
 **/*.rs.bk
 
 # Release workflow output and validation directories.
@@ -7,6 +8,8 @@
 /.deskcomm-linux-package/
 /.windows-package/
 /.deskcomm-windows-package/
+/.deaddrop-server-linux-package/
+/.deaddrop-server-linux-check/
 /.linux-check/
 /.windows-check/
 
