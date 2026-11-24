@@ -20,6 +20,25 @@ pub struct SamRuntime {
     inner: Arc<RuntimeInner>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct SamConnectCancellation {
+    inner: CancellationToken,
+}
+
+impl SamConnectCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.is_cancelled()
+    }
+}
+
 struct RuntimeInner {
     client: SamClient,
     operations: Arc<OperationRegistry>,
@@ -100,16 +119,29 @@ impl SamRuntime {
     }
 
     pub async fn connect(&self, destination: &str) -> Result<LiveConnection, SamError> {
-        let (cancellation, _operation) = self.begin_operation()?;
+        let cancellation = SamConnectCancellation::new();
+        self.connect_cancellable(destination, &cancellation).await
+    }
+
+    pub async fn connect_cancellable(
+        &self,
+        destination: &str,
+        cancellation: &SamConnectCancellation,
+    ) -> Result<LiveConnection, SamError> {
+        let _operation = self.begin_operation_with(cancellation.inner.clone())?;
         let parts = self
             .inner
             .client
-            .stream_connect(destination, &cancellation)
+            .stream_connect(destination, &cancellation.inner)
             .await?;
         let connection = LiveConnection::new(parts);
         if !self.register_live_if_open(&connection) {
             let _ = connection.close().await;
             return Err(SamError::RuntimeClosing);
+        }
+        if cancellation.is_cancelled() {
+            let _ = self.close_stream(&connection).await;
+            return Err(SamError::Cancelled);
         }
         Ok(connection)
     }
@@ -281,16 +313,25 @@ impl SamRuntime {
     }
 
     fn begin_operation(&self) -> Result<(CancellationToken, OperationGuard), SamError> {
+        let cancellation = CancellationToken::new();
+        let operation = self.begin_operation_with(cancellation.clone())?;
+        Ok((cancellation, operation))
+    }
+
+    fn begin_operation_with(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<OperationGuard, SamError> {
         if self.is_closing() {
             return Err(SamError::RuntimeClosing);
         }
-        let (cancellation, operation) = self.inner.operations.start();
+        let operation = self.inner.operations.start_with(cancellation.clone());
         if self.is_closing() {
             cancellation.cancel();
             drop(operation);
             return Err(SamError::RuntimeClosing);
         }
-        Ok((cancellation, operation))
+        Ok(operation)
     }
 
     fn register_live_if_open(&self, connection: &LiveConnection) -> bool {
@@ -392,19 +433,21 @@ impl OperationRegistry {
     }
 
     fn start(self: &Arc<Self>) -> (CancellationToken, OperationGuard) {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let token = CancellationToken::new();
+        let operation = self.start_with(token.clone());
+        (token, operation)
+    }
+
+    fn start_with(self: &Arc<Self>, token: CancellationToken) -> OperationGuard {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.active.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut tokens) = self.tokens.lock() {
             tokens.push((id, token.clone()));
         }
-        (
-            token,
-            OperationGuard {
-                id,
-                registry: Arc::clone(self),
-            },
-        )
+        OperationGuard {
+            id,
+            registry: Arc::clone(self),
+        }
     }
 
     fn active_count(&self) -> usize {

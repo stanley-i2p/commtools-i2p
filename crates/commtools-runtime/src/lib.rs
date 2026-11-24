@@ -42,8 +42,8 @@ use commtools_core::group_roster::{
     roster_sync, sign_owner_roster, verify_group_dissolution,
 };
 use commtools_core::group_session::{
-    GROUP_IMAGE_TRANSFER_MAX_BYTES, GroupSession, GroupSessionAction, GroupSessionConfig,
-    GroupSessionEvent as CoreGroupSessionEvent,
+    GROUP_CONNECT_TIMEOUT_MS, GROUP_IMAGE_TRANSFER_MAX_BYTES, GroupSession, GroupSessionAction,
+    GroupSessionConfig, GroupSessionEvent as CoreGroupSessionEvent,
 };
 use commtools_core::history::{HistoryError, HistoryRecord, HistoryScope};
 use commtools_core::ids::{ContactId, GroupId, SessionId, TransientId};
@@ -69,8 +69,8 @@ use commtools_core::sam::{
 };
 use commtools_core::{
     ContactRecord, FileFrameSealer, GroupRecord, MAX_DEADDROP_SERVERS, PersistentIdentity,
-    SamFailureAction, SamRuntime, StorageError, TofuPeerPin, TunnelSettings, UnlockedVault,
-    VaultError, group_storage_key, normalize_deaddrop_server,
+    SamConnectCancellation, SamFailureAction, SamRuntime, StorageError, TofuPeerPin,
+    TunnelSettings, UnlockedVault, VaultError, group_storage_key, normalize_deaddrop_server,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -90,6 +90,7 @@ const IMAGE_SEND_BURST_FRAMES: usize = 1;
 const BULK_SEND_PACING_INTERVAL: Duration = Duration::from_millis(40);
 const FILE_PROGRESS_STEP_BYTES: u64 = 256 * 1024;
 const FILE_OFFER_TIMEOUT_MS: u64 = 60_000;
+const GROUP_CONNECT_TIMEOUT: Duration = Duration::from_millis(GROUP_CONNECT_TIMEOUT_MS);
 const SAM_LIVENESS_PROBE_INTERVAL_MS: u64 = 10_000;
 const SAM_LIVENESS_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const SAM_LIVENESS_FAILURE_THRESHOLD: u8 = 3;
@@ -362,6 +363,8 @@ pub struct ApplicationDriver {
     pending_contact_opens: BTreeMap<ContactId, PendingContactOpen>,
     pending_transient_opens: BTreeMap<TransientId, PendingTransientOpen>,
     pending_group_opens: BTreeMap<GroupId, PendingGroupOpen>,
+    one_to_one_connect_cancellations: BTreeMap<(SessionId, u64), SamConnectCancellation>,
+    group_connect_cancellations: BTreeMap<(SessionId, u64), SamConnectCancellation>,
     pending_group_leave_requests: BTreeSet<GroupId>,
     groups_delete_after_close: BTreeSet<GroupId>,
     outgoing_files: BTreeMap<SessionId, OutgoingFileTransfer>,
@@ -420,6 +423,8 @@ impl ApplicationDriver {
             pending_contact_opens: BTreeMap::new(),
             pending_transient_opens: BTreeMap::new(),
             pending_group_opens: BTreeMap::new(),
+            one_to_one_connect_cancellations: BTreeMap::new(),
+            group_connect_cancellations: BTreeMap::new(),
             pending_group_leave_requests: BTreeSet::new(),
             groups_delete_after_close: BTreeSet::new(),
             outgoing_files: BTreeMap::new(),
@@ -5105,9 +5110,13 @@ impl ApplicationDriver {
                 let runtime = self.resource_one_to_one(session_id)?.sam.clone();
                 let connection_id = self.allocate_connection_id()?;
                 let tx = self.completions_tx.clone();
-                self.spawn(async move {
+                let cancellation = SamConnectCancellation::new();
+                self.one_to_one_connect_cancellations
+                    .insert((session_id, attempt_id), cancellation.clone());
+                let task_cancellation = cancellation.clone();
+                let spawn_result = self.spawn(async move {
                     let result = runtime
-                        .connect(&peer_b32)
+                        .connect_cancellable(&peer_b32, &task_cancellation)
                         .await
                         .map_err(|error| error.to_string());
                     let _ = tx
@@ -5120,9 +5129,22 @@ impl ApplicationDriver {
                             result,
                         })
                         .await;
-                })
+                });
+                if spawn_result.is_err() {
+                    self.one_to_one_connect_cancellations
+                        .remove(&(session_id, attempt_id));
+                }
+                spawn_result
             }
-            OneToOneAction::CancelConnect { .. } => Ok(()),
+            OneToOneAction::CancelConnect { attempt_id } => {
+                if let Some(cancellation) = self
+                    .one_to_one_connect_cancellations
+                    .get(&(session_id, attempt_id))
+                {
+                    cancellation.cancel();
+                }
+                Ok(())
+            }
             OneToOneAction::SendHandshake {
                 connection_id,
                 destination_prelude,
@@ -5177,11 +5199,13 @@ impl ApplicationDriver {
                     .clone();
                 let connection_id = self.allocate_connection_id()?;
                 let tx = self.completions_tx.clone();
-                self.spawn(async move {
-                    let result = runtime
-                        .connect(&peer_b32)
-                        .await
-                        .map_err(|error| error.to_string());
+                let cancellation = SamConnectCancellation::new();
+                self.group_connect_cancellations
+                    .insert((session_id, attempt_id), cancellation.clone());
+                let task_cancellation = cancellation.clone();
+                let spawn_result = self.spawn(async move {
+                    let result =
+                        group_connect_with_timeout(&runtime, &peer_b32, &task_cancellation).await;
                     let _ = tx
                         .send(Completion::GroupConnected {
                             session_id,
@@ -5192,9 +5216,22 @@ impl ApplicationDriver {
                             result,
                         })
                         .await;
-                })
+                });
+                if spawn_result.is_err() {
+                    self.group_connect_cancellations
+                        .remove(&(session_id, attempt_id));
+                }
+                spawn_result
             }
-            GroupSessionAction::CancelConnect { .. } => Ok(()),
+            GroupSessionAction::CancelConnect { attempt_id } => {
+                if let Some(cancellation) = self
+                    .group_connect_cancellations
+                    .get(&(session_id, attempt_id))
+                {
+                    cancellation.cancel();
+                }
+                Ok(())
+            }
             GroupSessionAction::SendHandshake {
                 connection_id,
                 destination_prelude,
@@ -5540,35 +5577,39 @@ impl ApplicationDriver {
                 peer_b32,
                 runtime,
                 result,
-            } => match result {
-                Ok(connection) => self.install_outbound_connection(
-                    session_id,
-                    connection_id,
-                    runtime,
-                    connection,
-                    |coordinator| {
-                        coordinator.contact_outbound_connected(
+            } => {
+                self.one_to_one_connect_cancellations
+                    .remove(&(session_id, attempt_id));
+                match result {
+                    Ok(connection) => self.install_outbound_connection(
+                        session_id,
+                        connection_id,
+                        runtime,
+                        connection,
+                        |coordinator| {
+                            coordinator.contact_outbound_connected(
+                                session_id,
+                                attempt_id,
+                                connection_id,
+                                &peer_b32,
+                                now_epoch_millis(),
+                            )
+                        },
+                    )?,
+                    Err(reason) => {
+                        if !self.resources.contains_key(&session_id) {
+                            return Ok(());
+                        }
+                        let output = self.coordinator.contact_outbound_failed_at(
                             session_id,
                             attempt_id,
-                            connection_id,
-                            &peer_b32,
+                            reason,
                             now_epoch_millis(),
-                        )
-                    },
-                )?,
-                Err(reason) => {
-                    if !self.resources.contains_key(&session_id) {
-                        return Ok(());
+                        )?;
+                        self.process_output(output)?;
                     }
-                    let output = self.coordinator.contact_outbound_failed_at(
-                        session_id,
-                        attempt_id,
-                        reason,
-                        now_epoch_millis(),
-                    )?;
-                    self.process_output(output)?;
                 }
-            },
+            }
             Completion::GroupConnected {
                 session_id,
                 attempt_id,
@@ -5576,32 +5617,36 @@ impl ApplicationDriver {
                 peer_b32,
                 runtime,
                 result,
-            } => match result {
-                Ok(connection) => self.install_outbound_connection(
-                    session_id,
-                    connection_id,
-                    runtime,
-                    connection,
-                    |coordinator| {
-                        coordinator.group_outbound_connected(
-                            session_id,
-                            &peer_b32,
-                            attempt_id,
-                            connection_id,
-                            now_epoch_millis(),
-                        )
-                    },
-                )?,
-                Err(reason) => {
-                    if !self.resources.contains_key(&session_id) {
-                        return Ok(());
+            } => {
+                self.group_connect_cancellations
+                    .remove(&(session_id, attempt_id));
+                match result {
+                    Ok(connection) => self.install_outbound_connection(
+                        session_id,
+                        connection_id,
+                        runtime,
+                        connection,
+                        |coordinator| {
+                            coordinator.group_outbound_connected(
+                                session_id,
+                                &peer_b32,
+                                attempt_id,
+                                connection_id,
+                                now_epoch_millis(),
+                            )
+                        },
+                    )?,
+                    Err(reason) => {
+                        if !self.resources.contains_key(&session_id) {
+                            return Ok(());
+                        }
+                        let output = self
+                            .coordinator
+                            .group_outbound_failed(session_id, &peer_b32, attempt_id, reason)?;
+                        self.process_output(output)?;
                     }
-                    let output = self
-                        .coordinator
-                        .group_outbound_failed(session_id, &peer_b32, attempt_id, reason)?;
-                    self.process_output(output)?;
                 }
-            },
+            }
             Completion::Accepted {
                 session_id,
                 connection_id,
@@ -8182,6 +8227,25 @@ fn now_epoch_millis() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
+async fn group_connect_with_timeout(
+    runtime: &SamRuntime,
+    peer_b32: &str,
+    cancellation: &SamConnectCancellation,
+) -> Result<LiveConnection, String> {
+    let mut connect = Box::pin(runtime.connect_cancellable(peer_b32, cancellation));
+    tokio::select! {
+        result = connect.as_mut() => result.map_err(|error| error.to_string()),
+        _ = tokio::time::sleep(GROUP_CONNECT_TIMEOUT) => {
+            cancellation.cancel();
+            let _ = connect.as_mut().await;
+            Err(format!(
+                "group connection attempt timed out after {} seconds",
+                GROUP_CONNECT_TIMEOUT.as_secs()
+            ))
+        }
+    }
+}
+
 fn current_utc_hms() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -8834,6 +8898,82 @@ mod tests {
         assert_eq!(config.sam_session_prefix(), "deskcomm");
         assert!(ApplicationDriverConfig::new("deskcomm client").is_err());
         assert!(ApplicationDriverConfig::new("").is_err());
+    }
+
+    #[test]
+    fn group_cancel_action_cancels_only_the_matching_attempt() {
+        let mut driver = ApplicationDriver::with_optional_vault(None);
+        let session_id = SessionId::new(41);
+        let matching = SamConnectCancellation::new();
+        let other = SamConnectCancellation::new();
+        driver
+            .group_connect_cancellations
+            .insert((session_id, 7), matching.clone());
+        driver
+            .group_connect_cancellations
+            .insert((session_id, 8), other.clone());
+
+        driver
+            .dispatch_group(
+                session_id,
+                GroupSessionAction::CancelConnect { attempt_id: 7 },
+            )
+            .expect("cancel matching group connection attempt");
+
+        assert!(matching.is_cancelled());
+        assert!(!other.is_cancelled());
+    }
+
+    #[test]
+    fn one_to_one_cancel_action_cancels_only_the_matching_attempt() {
+        let mut driver = ApplicationDriver::with_optional_vault(None);
+        let session_id = SessionId::new(42);
+        let matching = SamConnectCancellation::new();
+        let other = SamConnectCancellation::new();
+        let group = SamConnectCancellation::new();
+        driver
+            .one_to_one_connect_cancellations
+            .insert((session_id, 7), matching.clone());
+        driver
+            .one_to_one_connect_cancellations
+            .insert((session_id, 8), other.clone());
+        driver
+            .group_connect_cancellations
+            .insert((session_id, 7), group.clone());
+
+        driver
+            .dispatch_one_to_one(session_id, OneToOneAction::CancelConnect { attempt_id: 7 })
+            .expect("cancel matching 1:1 connection attempt");
+
+        assert!(matching.is_cancelled());
+        assert!(!other.is_cancelled());
+        assert!(!group.is_cancelled());
+    }
+
+    #[test]
+    fn one_to_one_completion_removes_its_cancellation_handle() {
+        let mut driver = ApplicationDriver::with_optional_vault(None);
+        let session_id = SessionId::new(43);
+        driver
+            .one_to_one_connect_cancellations
+            .insert((session_id, 9), SamConnectCancellation::new());
+
+        driver
+            .process_completion(Completion::ContactConnected {
+                session_id,
+                attempt_id: 9,
+                connection_id: ConnectionId::new(1),
+                peer_b32: "peer.b32.i2p".into(),
+                runtime: SamRuntime::new(SamEndpoint::default()),
+                result: Err("SAM operation was cancelled".into()),
+            })
+            .expect("process cancelled 1:1 completion");
+
+        assert!(
+            !driver
+                .one_to_one_connect_cancellations
+                .contains_key(&(session_id, 9))
+        );
     }
 
     #[test]

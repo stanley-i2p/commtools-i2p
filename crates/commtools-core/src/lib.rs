@@ -89,7 +89,7 @@ pub use sam::{
     AcceptedIncoming, LiveConnection, SamError, SamReply, SamSessionConfig, SamSessionInfo,
     SamSessionKind, TunnelOptions,
 };
-pub use sam_runtime::SamRuntime;
+pub use sam_runtime::{SamConnectCancellation, SamRuntime};
 pub use storage::{
     ContactRecord, DEFAULT_DEADDROP_SERVERS, DeaddropServerStat, GlobalSettings,
     GroupIssuedInviteRecord, GroupMemberRecord, GroupRecord, MAX_DEADDROP_SERVERS,

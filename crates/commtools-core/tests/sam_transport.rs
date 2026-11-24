@@ -1,10 +1,10 @@
-use commtools_core::SamRuntime;
 use commtools_core::config::SamEndpoint;
 use commtools_core::protocol::{Frame, MessageType};
 use commtools_core::sam::{
     MAX_TUNNEL_LENGTH, MAX_TUNNEL_QUANTITY, SamError, SamReply, SamSessionConfig, TunnelOptions,
     destination_to_b32,
 };
+use commtools_core::{SamConnectCancellation, SamRuntime};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -263,6 +263,87 @@ async fn shutdown_drains_a_late_successful_stream_connect() {
         connect.await.expect("connect task"),
         Err(SamError::Cancelled)
     ));
+    server.await.expect("server task");
+}
+
+#[tokio::test]
+async fn cancelling_one_connect_drains_its_late_reply_without_closing_the_runtime() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let (connect_seen_tx, connect_seen_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (control, _) = listener.accept().await.expect("control accept");
+        let (control_read, mut control_writer) = control.into_split();
+        let mut control_reader = BufReader::new(control_read);
+        complete_persistent_session(&mut control_reader, &mut control_writer).await;
+
+        let (stream, _) = listener.accept().await.expect("stream accept");
+        let (stream_read, mut stream_writer) = stream.into_split();
+        let mut stream_reader = BufReader::new(stream_read);
+        assert_eq!(
+            read_line(&mut stream_reader).await,
+            "HELLO VERSION MIN=3.0 MAX=3.2"
+        );
+        stream_writer
+            .write_all(b"HELLO REPLY RESULT=OK VERSION=3.2\n")
+            .await
+            .expect("stream hello");
+        assert_eq!(
+            read_line(&mut stream_reader).await,
+            "STREAM CONNECT ID=test-session DESTINATION=cancelled-peer.b32.i2p"
+        );
+        connect_seen_tx.send(()).expect("connect notification");
+        sleep(Duration::from_millis(50)).await;
+        stream_writer
+            .write_all(b"STREAM STATUS RESULT=OK\n")
+            .await
+            .expect("late connect reply");
+
+        let mut stream_remainder = Vec::new();
+        timeout(
+            Duration::from_secs(1),
+            stream_reader.read_to_end(&mut stream_remainder),
+        )
+        .await
+        .expect("cancelled stream close timeout")
+        .expect("cancelled stream EOF");
+        assert!(stream_remainder.is_empty());
+
+        let mut control_remainder = Vec::new();
+        timeout(
+            Duration::from_secs(1),
+            control_reader.read_to_end(&mut control_remainder),
+        )
+        .await
+        .expect("control close timeout")
+        .expect("control EOF");
+    });
+
+    let runtime = runtime_for(address);
+    runtime
+        .create_session(&persistent_config())
+        .await
+        .expect("create session");
+    let cancellation = SamConnectCancellation::new();
+    let connecting_runtime = runtime.clone();
+    let task_cancellation = cancellation.clone();
+    let connect = tokio::spawn(async move {
+        connecting_runtime
+            .connect_cancellable("cancelled-peer.b32.i2p", &task_cancellation)
+            .await
+    });
+    connect_seen_rx.await.expect("connect command observed");
+    cancellation.cancel();
+
+    assert!(matches!(
+        connect.await.expect("connect task"),
+        Err(SamError::Cancelled)
+    ));
+    assert!(!runtime.is_closing());
+    assert!(!runtime.is_closed());
+    assert_eq!(runtime.active_operation_count(), 0);
+    assert_eq!(runtime.registered_stream_count(), 0);
+    runtime.shutdown().await.expect("shutdown runtime");
     server.await.expect("server task");
 }
 

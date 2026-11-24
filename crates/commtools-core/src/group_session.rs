@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 pub const GROUP_CONNECT_RETRY_MS: u64 = 5_000;
+pub const GROUP_CONNECT_TIMEOUT_MS: u64 = 60_000;
 pub const GROUP_HANDSHAKE_TIMEOUT_MS: u64 = 45_000;
 pub const GROUP_IMAGE_TRANSFER_MAX_BYTES: usize = 2 * 1_024 * 1_024;
 pub const GROUP_IMAGE_CHUNK_BYTES: usize = 4_096;
